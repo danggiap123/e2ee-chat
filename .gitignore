@@ -1,0 +1,22 @@
+# Dependencies (quá nặng, tự cài lại được)
+node_modules/
+
+# Environment variables (chứa password, không được public)
+.env
+.env.local
+.env.production
+
+# Build output
+dist/
+build/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker volumes (data local)
+postgres_data/
