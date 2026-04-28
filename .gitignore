@@ -20,3 +20,8 @@ Thumbs.db
 
 # Docker volumes (data local)
 postgres_data/
+
+# Local project docs (không push lên git)
+CLAUDE.md
+PROGRESS.md
+docs/

@@ -1,0 +1,65 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Bảng người dùng
+model User {
+  id           String   @id @default(uuid()) // primary key, tự sinh UUID
+  username     String   @unique              // không được trùng username
+  passwordHash String                        // mật khẩu đã hash bằng argon2id, không lưu plaintext
+  createdAt    DateTime @default(now())      // tự điền thời gian tạo tài khoản
+
+  keyBundle        KeyBundle?
+  sentMessages     Message[]      @relation("SentMessages")
+  conversationsAsA Conversation[] @relation("ConversationA")
+  conversationsAsB Conversation[] @relation("ConversationB")
+}
+
+// Bảng public key của mỗi user — server chỉ thấy public key, không bao giờ thấy private key
+model KeyBundle {
+  id     String @id @default(uuid())
+  userId String @unique          // mỗi user chỉ có 1 key bundle
+  user   User   @relation(fields: [userId], references: [id])
+
+  ikPub   String   // Identity Key public — định danh lâu dài của user
+  spkPub  String   // Signed PreKey public — thay định kỳ
+  spkSig  String   // Chữ ký Ed25519 trên SPK, để client xác minh SPK chưa bị giả mạo
+  opkPubs String[] // Danh sách One-Time PreKey — dùng 1 lần rồi bỏ, chống replay attack
+}
+
+// Bảng cuộc trò chuyện — mỗi cặp user chỉ có 1 conversation
+model Conversation {
+  id           String    @id @default(uuid())
+  participantA String
+  participantB String
+  fingerprintVerified Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+
+  userA    User      @relation("ConversationA", fields: [participantA], references: [id])
+  userB    User      @relation("ConversationB", fields: [participantB], references: [id])
+  messages Message[]
+
+  @@unique([participantA, participantB]) // không thể có 2 conversation giữa cùng 1 cặp user
+  @@index([participantA])
+  @@index([participantB])
+}
+
+// Bảng tin nhắn đã mã hóa — server không đọc được nội dung
+model Message {
+  id             String       @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  senderId       String
+  sender         User         @relation("SentMessages", fields: [senderId], references: [id])
+  ciphertext     String                         // nội dung đã mã hóa AES-256-GCM
+  iv             String                         // Initialization Vector 12 bytes, cần để giải mã
+  aad            String                         // Additional Authenticated Data — chống giả mạo metadata
+  createdAt      DateTime     @default(now())
+  ekPub          String?      // ← chỉ có ở tin X3DH đầu tiên
+  opkId          String?      // ← Bob cần để tìm đúng OPK private key
+  @@index([conversationId, createdAt(sort: Desc)]) // phân trang tin nhắn nhanh
+}
