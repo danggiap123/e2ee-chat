@@ -66,4 +66,44 @@ router.post('/', requireAuth, async (req, res) => {
   });
 });
 
+// ─── DELETE /conversations/:convId ───────────────────────────────────────────
+// Xóa toàn bộ conversation + tất cả tin nhắn bên trong
+// Chỉ thành viên của conversation mới được xóa
+router.delete('/:convId', requireAuth, async (req, res) => {
+
+  const { convId } = req.params;
+
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: convId },
+  });
+
+  if (!conversation) {
+    return res.status(404).json({ error: 'Conversation không tồn tại' });
+  }
+
+  // Chỉ 2 thành viên mới được xóa conversation
+  const isMember =
+    conversation.participantA === req.user.userId ||
+    conversation.participantB === req.user.userId;
+
+  if (!isMember) {
+    return res.status(403).json({ error: 'Bạn không phải thành viên của conversation này' });
+  }
+
+  // Xóa tin nhắn trước, sau đó mới xóa conversation
+  // Vì Message có foreign key trỏ vào Conversation — xóa ngược sẽ lỗi
+  const deleted = await prisma.message.deleteMany({
+    where: { conversationId: convId },
+  });
+
+  await prisma.conversation.delete({
+    where: { id: convId },
+  });
+
+  return res.json({
+    message: 'Đã xóa conversation',
+    messagesDeleted: deleted.count,
+  });
+});
+
 module.exports = router;

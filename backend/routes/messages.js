@@ -117,4 +117,31 @@ router.get('/:convId', requireAuth, async (req, res) => {
   return res.json({ messages, nextCursor });
 });
 
+// ─── DELETE /messages/:messageId ─────────────────────────────────────────────
+// Chỉ người GỬI mới được xóa tin của mình — người nhận không xóa được
+router.delete('/:messageId', requireAuth, async (req, res) => {
+
+  const { messageId } = req.params;
+
+  // Tìm tin nhắn theo messageId
+  const message = await prisma.message.findUnique({
+    where: { id: messageId },
+  });
+
+  if (!message) {
+    return res.status(404).json({ error: 'Tin nhắn không tồn tại' });
+  }
+
+  // Chỉ người gửi mới được xóa — nếu người khác gọi → 403
+  if (message.senderId !== req.user.userId) {
+    return res.status(403).json({ error: 'Bạn chỉ có thể xóa tin nhắn của chính mình' });
+  }
+
+  await prisma.message.delete({
+    where: { id: messageId },
+  });
+
+  return res.json({ message: 'Đã xóa tin nhắn' });
+});
+
 module.exports = router;
