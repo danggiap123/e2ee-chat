@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const argon2 = require('argon2');
+const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { PrismaClient } = require('@prisma/client');
 const redis = require('../redis');
@@ -8,15 +8,10 @@ const { requireAuth } = require('../middleware/auth');
 
 const prisma = new PrismaClient();
 
-// Hash giả dùng để chống timing attack khi username không tồn tại
-const DUMMY_HASH = '$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHRzb21lc2FsdA$RdescudvJCsgt3ub+b+dWRWJTmaasfasf';
+const BCRYPT_ROUNDS = 12; // cost factor — hash lặp 2^12 = 4096 lần, mất ~300ms
 
-const ARGON2_OPTIONS = {
-  type: argon2.argon2id,
-  memoryCost: 65536, // 64 MB
-  timeCost: 3,
-  parallelism: 4,
-};
+// Hash giả dùng để chống timing attack khi username không tồn tại
+const DUMMY_HASH = '$2b$12$somerandombcrypthashvalueusedfordummyverification1234';
 
 // POST /auth/register
 router.post('/register', async (req, res) => {
@@ -35,7 +30,7 @@ router.post('/register', async (req, res) => {
     return res.status(409).json({ error: 'Username đã tồn tại' });
   }
 
-  const hash = await argon2.hash(password, ARGON2_OPTIONS);
+  const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
   await prisma.user.create({
     data: { username, passwordHash: hash },
@@ -56,7 +51,7 @@ router.post('/login', async (req, res) => {
 
   // Luôn chạy verify dù user có tồn tại hay không — chống timing attack
   const hashToVerify = user ? user.passwordHash : DUMMY_HASH;
-  const valid = await argon2.verify(hashToVerify, password);
+  const valid = await bcrypt.compare(password, hashToVerify);
 
   if (!user || !valid) {
     return res.status(401).json({ error: 'Sai username hoặc password' });
