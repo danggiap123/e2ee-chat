@@ -62,5 +62,6 @@ model Message {
   createdAt      DateTime     @default(now())
   ekPub          String?      // ← chỉ có ở tin X3DH đầu tiên
   opkId          String?      // ← Bob cần để tìm đúng OPK private key
+  @@unique([conversationId, iv])                    // IV phải duy nhất trong conversation — chống replay attack
   @@index([conversationId, createdAt(sort: Desc)]) // phân trang tin nhắn nhanh
 }

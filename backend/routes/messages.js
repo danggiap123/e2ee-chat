@@ -31,6 +31,7 @@ router.post('/', requireAuth, async (req, res) => {
     }
 
     // Server chỉ lưu bản mã — không đọc được nội dung (Blind Server model)
+    // Nếu IV trùng → PostgreSQL tự throw lỗi P2002 → bắt trong catch bên dưới
     const message = await prisma.message.create({
       data: {
         conversationId,
@@ -48,6 +49,9 @@ router.post('/', requireAuth, async (req, res) => {
       createdAt: message.createdAt,
     });
   } catch (err) {
+    if (err.code === 'P2002') {
+      return res.status(409).json({ error: 'Phát hiện tấn công phát lại' });
+    }
     console.error('[POST /messages]', err);
     return res.status(500).json({ error: 'Lỗi server khi gửi tin nhắn' });
   }
@@ -57,7 +61,7 @@ router.post('/', requireAuth, async (req, res) => {
 router.get('/:convId', requireAuth, async (req, res) => {
   try {
     const { convId } = req.params;
-    const limit  = parseInt(req.query.limit) || 20;
+    const limit = parseInt(req.query.limit) || 20; // parseInt để đảm bảo limit là số nguyên
     const cursor = req.query.cursor;
 
     const conversation = await prisma.conversation.findUnique({

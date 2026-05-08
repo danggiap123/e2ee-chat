@@ -97,18 +97,18 @@ router.post('/opk', requireAuth, async (req, res) => {
     }
 
     const canAdd = MAX_OPK - currentCount;
-    const toAdd  = opkPubs.slice(0, canAdd);
+    const toAdd = opkPubs.slice(0, canAdd);
 
     await prisma.keyBundle.update({
       where: { userId: req.user.userId },
-      data:  { opkPubs: { push: toAdd } },
+      data: { opkPubs: { push: toAdd } },
     });
 
     return res.json({
-      message:  `Đã thêm ${toAdd.length} OPK mới`,
-      added:    toAdd.length,
+      message: `Đã thêm ${toAdd.length} OPK mới`,
+      added: toAdd.length,
       previous: currentCount,
-      current:  currentCount + toAdd.length,
+      current: currentCount + toAdd.length,
     });
   } catch (err) {
     console.error('[POST /keys/opk]', err);
