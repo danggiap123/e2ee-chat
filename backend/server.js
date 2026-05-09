@@ -1,26 +1,36 @@
-require('dotenv').config(); // import thư viện dotenv để load biến môi trường từ file .env
-const express = require('express'); //import thư viện express để tạo server
-const authRoutes     = require('./routes/auth');     // import routes auth
-const keyRoutes      = require('./routes/keys');     // import routes key bundle
-const messageRoutes       = require('./routes/messages');      // import routes messages
-const conversationRoutes  = require('./routes/conversations'); // import routes conversations
+require('dotenv').config(); // load .env trước tất cả — JWT_SECRET, DATABASE_URL, REDIS_URL phải có sẵn
+const http    = require('http');    // module HTTP core của Node.js — cần để chia sẻ cổng với WebSocket
+const express = require('express');
 
-const app = express(); //tạo ứng dụng express
-app.use(express.json()); //middleware để parse JSON body của request, giúp server có thể đọc được dữ liệu gửi lên từ client dưới dạng JSON
+const { initWebSocket }      = require('./ws/handler');
+const authRoutes             = require('./routes/auth');
+const keyRoutes              = require('./routes/keys');
+const messageRoutes          = require('./routes/messages');
+const conversationRoutes     = require('./routes/conversations');
+const userRoutes             = require('./routes/users');
 
-app.use('/auth', authRoutes); // mount auth routes: /auth/register, /auth/login, /auth/logout
-app.use('/keys',     keyRoutes);     // mount key routes:    /keys/upload, /keys/:userId
-app.use('/messages',      messageRoutes);      // mount message routes:      /messages, /messages/:convId
-app.use('/conversations', conversationRoutes); // mount conversation routes: /conversations
+const app = express();
+app.use(express.json()); // parse body JSON cho tất cả REST endpoint
 
-//kiểm tra server có chạy được không bằng endpoint /health
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok' });
-});
+app.use('/auth',          authRoutes);
+app.use('/keys',          keyRoutes);
+app.use('/messages',      messageRoutes);
+app.use('/conversations',  conversationRoutes);
+app.use('/users',         userRoutes);
 
-// lắng nghe request,in ra log khi server đã sẵn sàng
+app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
+// Tạo HTTP server bọc ngoài Express app.
+// Lý do: thư viện ws cần gắn vào http.Server — không thể gắn thẳng vào Express app.
+// Cả REST và WebSocket đều dùng chung cổng 3000, Node.js tự phân biệt qua header Upgrade.
+const server = http.createServer(app);
+
+// Khởi động WebSocket server — path /ws, xác thực JWT bên trong handler
+initWebSocket(server);
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`REST  → http://localhost:${PORT}`);
+  console.log(`WS    → ws://localhost:${PORT}/ws?token=<JWT>`);
 });
-
