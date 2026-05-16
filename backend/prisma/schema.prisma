@@ -60,8 +60,9 @@ model Message {
   iv             String                         // Initialization Vector 12 bytes, cần để giải mã
   aad            String                         // Additional Authenticated Data — chống giả mạo metadata
   createdAt      DateTime     @default(now())
-  ekPub          String?      // ← chỉ có ở tin X3DH đầu tiên
+  ekPub          String?      // ← bộ 3 X3DH init: chỉ có ở tin đầu tiên
   opkId          String?      // ← Bob cần để tìm đúng OPK private key
+  ikPub          String?      // ← IK_pub của sender, Bob cần để tính DH1
   @@unique([conversationId, iv])                    // IV phải duy nhất trong conversation — chống replay attack
   @@index([conversationId, createdAt(sort: Desc)]) // phân trang tin nhắn nhanh
 }

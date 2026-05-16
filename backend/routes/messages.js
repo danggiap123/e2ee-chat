@@ -8,7 +8,7 @@ const prisma = new PrismaClient();
 // ─── POST /messages ───────────────────────────────────────────────────────────
 router.post('/', requireAuth, async (req, res) => {
   try {
-    const { conversationId, ciphertext, iv, aad, ekPub, opkId } = req.body;
+    const { conversationId, ciphertext, iv, aad, ekPub, opkId, ikPub } = req.body;
 
     if (!conversationId || !ciphertext || !iv || !aad) {
       return res.status(400).json({ error: 'Thiếu trường bắt buộc: conversationId, ciphertext, iv, aad' });
@@ -41,6 +41,7 @@ router.post('/', requireAuth, async (req, res) => {
         aad,
         ekPub: ekPub ?? null,
         opkId: opkId ?? null,
+        ikPub: ikPub ?? null,
       },
     });
 
@@ -93,6 +94,7 @@ router.get('/:convId', requireAuth, async (req, res) => {
         aad: true,
         ekPub: true,
         opkId: true,
+        ikPub: true,
         createdAt: true,
       },
     });

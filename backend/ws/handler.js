@@ -1,38 +1,36 @@
 'use strict';
 
 const WebSocket = require('ws');
-const jwt       = require('jsonwebtoken');
+const jwt = require('jsonwebtoken');
 const { PrismaClient } = require('@prisma/client');
-const redis     = require('../redis');
+const redis = require('../redis');
 
-const prisma  = new PrismaClient();
+const prisma = new PrismaClient();
 
 // Map<userId, WebSocket> — sống trong RAM, mất khi server restart
 // Key: UUID string của user. Value: đối tượng WebSocket đang kết nối.
 const clients = new Map();
 
 // ─── Khởi động WebSocket server ───────────────────────────────────────────────
-// Nhận vào HTTP server (không phải Express app) để dùng chung cổng 3000.
+// Nhận vào HTTP server để thực hiện HTTP Upgrade từ REST sang WS, dùng chung cổng 3000 với Express app
 function initWebSocket(server) {
   const wss = new WebSocket.Server({ server, path: '/ws' });
-
+  // Mỗi khi có client kết nối, chạy hàm onConnect để xử lý xác thực và đăng ký events cho socket đó
   wss.on('connection', (ws, req) => {
-    // Không dùng async ở đây — xử lý lỗi async bên trong onConnect
+    //chạy hàm onConnect để xử lý lỗi async bên trong onConnect
     onConnect(ws, req).catch((err) => {
       console.error('[WS] onConnect unhandled error:', err.message);
       ws.close(4500, 'Internal server error');
     });
   });
 
-  return wss;
 }
 
 // ─── Xử lý khi client kết nối ─────────────────────────────────────────────────
 async function onConnect(ws, req) {
-  // Bước 1: Lấy JWT từ query string ws://host/ws?token=eyJ...
-  // URL constructor cần base giả vì req.url chỉ là path (/ws?token=...)
-  const params = new URL(req.url, 'http://x').searchParams;
-  const token  = params.get('token');
+  // Bước 1: Lấy JWT từ query string của HTTP Upgrade request
+  // req.url = '/ws?token=eyJ...' — split theo '?token=' lấy phần sau
+  const token = req.url.split('?token=')[1];
 
   if (!token) {
     ws.close(4001, 'Missing token');
@@ -132,7 +130,7 @@ async function onMessage(ws, userId, raw) {
 
 // ─── Xử lý tin nhắn chat ──────────────────────────────────────────────────────
 async function handleChatMessage(ws, senderId, msg) {
-  const { conversationId, ciphertext, iv, aad, ekPub, opkId } = msg;
+  const { conversationId, ciphertext, iv, aad, ekPub, opkId, ikPub } = msg;
 
   // Validate: 4 trường bắt buộc phải có để giải mã được
   if (!conversationId || !ciphertext || !iv || !aad) {
@@ -179,9 +177,10 @@ async function handleChatMessage(ws, senderId, msg) {
         ciphertext,
         iv,
         aad,
-        // ekPub và opkId chỉ có ở tin X3DH đầu tiên — undefined thì không ghi
-        ...(ekPub != null && { ekPub }),
-        ...(opkId != null && { opkId }),
+        // ekPub, opkId, ikPub chỉ có ở tin X3DH đầu tiên — undefined thì không ghi
+        ...(ekPub  != null && { ekPub }),
+        ...(opkId  != null && { opkId }),
+        ...(ikPub  != null && { ikPub }),
       },
     });
   } catch (err) {
@@ -195,8 +194,8 @@ async function handleChatMessage(ws, senderId, msg) {
   const receiverSocket = clients.get(receiverId);
   if (receiverSocket && receiverSocket.readyState === WebSocket.OPEN) {
     safeSend(receiverSocket, {
-      type:           'message',
-      msgId:          saved.id,
+      type: 'message',
+      msgId: saved.id,
       conversationId,
       senderId,
       ciphertext,
@@ -204,16 +203,17 @@ async function handleChatMessage(ws, senderId, msg) {
       aad,
       ...(ekPub  != null && { ekPub }),
       ...(opkId  != null && { opkId }),
-      createdAt:      saved.createdAt,
+      ...(ikPub  != null && { ikPub }),
+      createdAt: saved.createdAt,
     });
   }
   // Nếu receiver offline: tin đã lưu DB, họ load lại lịch sử khi online là thấy
 
   // Trả ACK cho sender: thông báo tin đã lưu thành công
   safeSend(ws, {
-    type:      'ack',
-    success:   true,
-    msgId:     saved.id,
+    type: 'ack',
+    success: true,
+    msgId: saved.id,
     createdAt: saved.createdAt,
   });
 }
