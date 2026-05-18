@@ -1,6 +1,7 @@
 require('dotenv').config(); // load .env trước tất cả — JWT_SECRET, DATABASE_URL, REDIS_URL phải có sẵn
 const http = require('http');    // module HTTP core của Node.js — cần để chia sẻ cổng với WebSocket
 const express = require('express');
+const cors = require('cors');
 
 const { initWebSocket } = require('./ws/handler');
 const authRoutes = require('./routes/auth');
@@ -10,6 +11,17 @@ const conversationRoutes = require('./routes/conversations');
 const userRoutes = require('./routes/users');
 
 const app = express(); // Tạo Express app — sẽ gắn vào http.Server để phục vụ REST API
+
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173').split(',');
+app.use(cors({
+  origin: (origin, cb) => {
+    // origin = undefined khi gọi từ Postman / curl (không có browser) → cho qua
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS: origin ${origin} không được phép`));
+  },
+  credentials: true, // cho phép FE gửi cookie / Authorization header
+}));
+
 app.use(express.json()); // parse body JSON cho tất cả REST endpoint
 
 app.use('/auth', authRoutes);

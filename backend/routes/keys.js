@@ -4,9 +4,10 @@ const { PrismaClient } = require('@prisma/client');
 const { requireAuth } = require('../middleware/auth');
 
 const prisma = new PrismaClient();
+
 function isValidOpkArray(arr) {
   return Array.isArray(arr) && arr.length > 0 &&
-    arr.every(o => o && typeof o.id === 'string' && typeof o.pub === 'string');
+    arr.every(o => o && typeof o.id === 'string' && typeof o.pub === 'string');// o là truthy OPK object phải có id và pub đều là string, không rỗng, không null, không undefined
 }
 
 // ─── POST /keys/upload ───────────────────────────────────────────────────────
@@ -79,8 +80,8 @@ router.post('/opk', requireAuth, async (req, res) => {
     const { opkPubs } = req.body;
     const MAX_OPK = 100;
 
-    if (!Array.isArray(opkPubs) || opkPubs.length === 0) {
-      return res.status(400).json({ error: 'opkPubs phải là mảng không rỗng' });
+    if (!isValidOpkArray(opkPubs)) {
+      return res.status(400).json({ error: 'opkPubs phải là mảng [{ id, pub }] không rỗng' });
     }
 
     const existing = await prisma.keyBundle.findUnique({

@@ -62,7 +62,7 @@ router.post('/', requireAuth, async (req, res) => {
 router.get('/:convId', requireAuth, async (req, res) => {
   try {
     const { convId } = req.params;
-    const limit = parseInt(req.query.limit) || 20; // parseInt để đảm bảo limit là số nguyên
+    const limit = Math.min(parseInt(req.query.limit) || 20, 100);//dù client có gửi limit bao nhiêu thì server cũng chỉ trả tối đa 100 tin mỗi lần để tránh quá tải, mặc định là 20 nếu client không gửi limit nào cả.
     const cursor = req.query.cursor;
 
     const conversation = await prisma.conversation.findUnique({
