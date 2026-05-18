@@ -86,7 +86,7 @@ router.post('/login', loginLimiter, async (req, res) => {
       { expiresIn: '7d' }
     );
 
-    return res.json({ token, userId: user.id, username: user.username });
+    return res.json({ token, userId: user.id, username: user.username });//username trong payload JWT để client hiển thị mà không cần gọi API
   } catch (err) {
     console.error('[POST /login]', err);
     return res.status(500).json({ error: 'Lỗi server khi đăng nhập' });

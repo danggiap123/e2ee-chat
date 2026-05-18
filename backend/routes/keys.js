@@ -4,13 +4,17 @@ const { PrismaClient } = require('@prisma/client');
 const { requireAuth } = require('../middleware/auth');
 
 const prisma = new PrismaClient();
+function isValidOpkArray(arr) {
+  return Array.isArray(arr) && arr.length > 0 &&
+    arr.every(o => o && typeof o.id === 'string' && typeof o.pub === 'string');
+}
 
 // ─── POST /keys/upload ───────────────────────────────────────────────────────
 router.post('/upload', requireAuth, async (req, res) => {
   try {
     const { ikPub, spkPub, spkSig, opkPubs } = req.body;
 
-    if (!ikPub || !spkPub || !spkSig || !Array.isArray(opkPubs) || opkPubs.length === 0) {
+    if (!ikPub || !spkPub || !spkSig || !isValidOpkArray(opkPubs)) {
       return res.status(400).json({ error: 'Thiếu trường bắt buộc: ikPub, spkPub, spkSig, opkPubs[]' });
     }
 
@@ -48,9 +52,9 @@ router.get('/:userId', requireAuth, async (req, res) => {
       return res.status(410).json({ error: 'Hết OPK — Alice cần upload thêm' });
     }
 
-    const [opkPub, ...remainingOpks] = bundle.opkPubs;
+    const [firstOpk, ...remainingOpks] = bundle.opkPubs;
 
-    // Xóa OPK vừa lấy khỏi DB ngay lập tức — dùng 1 lần rồi bỏ, tránh replay attack
+    // Xóa OPK vừa lấy khỏi DB ngay lập tức — dùng 1 lần rồi bỏ 
     await prisma.keyBundle.update({
       where: { userId: req.params.userId },
       data: { opkPubs: remainingOpks },
@@ -60,8 +64,8 @@ router.get('/:userId', requireAuth, async (req, res) => {
       ikPub: bundle.ikPub,
       spkPub: bundle.spkPub,
       spkSig: bundle.spkSig,
-      opkPub,
-      opkId: bundle.id,
+      opkPub: firstOpk.pub,  // lấy .pub từ object { id, pub }
+      opkId: firstOpk.id,   // lấy .id riêng của OPK này 
     });
   } catch (err) {
     console.error('[GET /keys/:userId]', err);

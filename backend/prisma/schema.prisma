@@ -29,7 +29,7 @@ model KeyBundle {
   ikPub   String   // Identity Key public — định danh lâu dài của user
   spkPub  String   // Signed PreKey public — thay định kỳ
   spkSig  String   // Chữ ký Ed25519 trên SPK, để client xác minh SPK chưa bị giả mạo
-  opkPubs String[] // Danh sách One-Time PreKey — dùng 1 lần rồi bỏ, chống replay attack
+  opkPubs Json[]  // mỗi phần tử: { id: string, pub: string } 
 }
 
 // Bảng cuộc trò chuyện — mỗi cặp user chỉ có 1 conversation

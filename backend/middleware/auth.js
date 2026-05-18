@@ -20,9 +20,12 @@ async function requireAuth(req, res, next) {
   }
 
   // Kiểm tra token có trong Redis blocklist không (đã logout trước đó)
-  const blocked = await redis.get(`blocklist:${token}`);
-  if (blocked) {
-    return res.status(401).json({ error: 'Token đã bị thu hồi' });
+  try {
+    const blocked = await redis.get(`blocklist:${token}`);
+    if (blocked) return res.status(401).json({ error: 'Token đã bị thu hồi' });
+  } catch {
+    // Redis down → bỏ qua check blocklist, vẫn cho qua
+    console.error('Redis down, skipping blocklist check');
   }
 
   req.user = decoded; // gắn payload vào request để các route sau dùng

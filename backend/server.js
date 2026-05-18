@@ -1,31 +1,30 @@
 require('dotenv').config(); // load .env trước tất cả — JWT_SECRET, DATABASE_URL, REDIS_URL phải có sẵn
-const http    = require('http');    // module HTTP core của Node.js — cần để chia sẻ cổng với WebSocket
+const http = require('http');    // module HTTP core của Node.js — cần để chia sẻ cổng với WebSocket
 const express = require('express');
 
-const { initWebSocket }      = require('./ws/handler');
-const authRoutes             = require('./routes/auth');
-const keyRoutes              = require('./routes/keys');
-const messageRoutes          = require('./routes/messages');
-const conversationRoutes     = require('./routes/conversations');
-const userRoutes             = require('./routes/users');
+const { initWebSocket } = require('./ws/handler');
+const authRoutes = require('./routes/auth');
+const keyRoutes = require('./routes/keys');
+const messageRoutes = require('./routes/messages');
+const conversationRoutes = require('./routes/conversations');
+const userRoutes = require('./routes/users');
 
-const app = express();
+const app = express(); // Tạo Express app — sẽ gắn vào http.Server để phục vụ REST API
 app.use(express.json()); // parse body JSON cho tất cả REST endpoint
 
-app.use('/auth',          authRoutes);
-app.use('/keys',          keyRoutes);
-app.use('/messages',      messageRoutes);
-app.use('/conversations',  conversationRoutes);
-app.use('/users',         userRoutes);
+app.use('/auth', authRoutes);
+app.use('/keys', keyRoutes);
+app.use('/messages', messageRoutes);
+app.use('/conversations', conversationRoutes);
+app.use('/users', userRoutes);
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
-// Tạo HTTP server bọc ngoài Express app.
-// Lý do: thư viện ws cần gắn vào http.Server — không thể gắn thẳng vào Express app.
+// Tạo HTTP server bọc ngoài Express app để khi có request thường đến thì Express sẽ xử lý, còn nếu có request WebSocket thì sẽ được WebSocket server xử lý.
 // Cả REST và WebSocket đều dùng chung cổng 3000, Node.js tự phân biệt qua header Upgrade.
 const server = http.createServer(app);
 
-// Khởi động WebSocket server — path /ws, xác thực JWT bên trong handler
+// Khởi động WebSocket server, gắn websocket server vào httpserver 
 initWebSocket(server);
 
 const PORT = process.env.PORT || 3000;

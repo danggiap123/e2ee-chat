@@ -12,7 +12,6 @@ const prisma = new PrismaClient();
 const clients = new Map();
 
 // ─── Khởi động WebSocket server ───────────────────────────────────────────────
-// Nhận vào HTTP server để thực hiện HTTP Upgrade từ REST sang WS, dùng chung cổng 3000 với Express app
 function initWebSocket(server) {
   const wss = new WebSocket.Server({ server, path: '/ws' });
   // Mỗi khi có client kết nối, chạy hàm onConnect để xử lý xác thực và đăng ký events cho socket đó
@@ -178,9 +177,9 @@ async function handleChatMessage(ws, senderId, msg) {
         iv,
         aad,
         // ekPub, opkId, ikPub chỉ có ở tin X3DH đầu tiên — undefined thì không ghi
-        ...(ekPub  != null && { ekPub }),
-        ...(opkId  != null && { opkId }),
-        ...(ikPub  != null && { ikPub }),
+        ...(ekPub != null && { ekPub }),
+        ...(opkId != null && { opkId }),
+        ...(ikPub != null && { ikPub }),
       },
     });
   } catch (err) {
@@ -201,9 +200,9 @@ async function handleChatMessage(ws, senderId, msg) {
       ciphertext,
       iv,
       aad,
-      ...(ekPub  != null && { ekPub }),
-      ...(opkId  != null && { opkId }),
-      ...(ikPub  != null && { ikPub }),
+      ...(ekPub != null && { ekPub }),
+      ...(opkId != null && { opkId }),
+      ...(ikPub != null && { ikPub }),
       createdAt: saved.createdAt,
     });
   }

@@ -31,7 +31,7 @@ router.post('/', requireAuth, async (req, res) => {
       where: {
         OR: [
           { participantA: req.user.userId, participantB: recipientId },
-          { participantA: recipientId,     participantB: req.user.userId },
+          { participantA: recipientId, participantB: req.user.userId },
         ],
       },
     });
@@ -86,7 +86,7 @@ router.get('/', requireAuth, async (req, res) => {
       },
     });
 
-    // Định dạng lại: trả về thông tin người kia, không phải participantA/B
+    // Định dạng lại: trả về thông tin người kia
     const result = conversations.map((conv) => {
       const isA = conv.userA.id === req.user.userId;
       const peer = isA ? conv.userB : conv.userA; // người kia trong conversation
