@@ -1,0 +1,5 @@
+@import "tailwindcss";
+
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, 'Segoe UI', sans-serif; }
+#root { height: 100vh; display: flex; flex-direction: column; }

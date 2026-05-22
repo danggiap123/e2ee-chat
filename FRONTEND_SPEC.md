@@ -113,44 +113,65 @@ Thư viện: sodium.crypto_box_keypair()
 Ghi chú: Khi pool < 10, cần gọi lại và upload thêm qua POST /keys/opk
 ```
 
-#### `wrapPrivateKey(privKey, password)`
+#### `wrapPrivateKey(privKey, wrappingKey)`
 ```
-Mục đích: Bảo vệ private key bằng password trước khi lưu IndexedDB
+Mục đích: Bảo vệ private key bằng wrappingKey trước khi lưu IndexedDB
 Input:
   - privKey (Uint8Array): private key cần bảo vệ
-  - password (string): mật khẩu người dùng nhập
-Output: { wrapped: string (base64), salt: string (base64), iv: string (base64) }
+  - wrappingKey (CryptoKey): AES-GCM key đã được derive sẵn bởi AuthContext — KHÔNG nhận password
+Output: { wrapped: string (base64), iv: string (base64) }
 Thư viện: Web Crypto API
 
 Chi tiết từng bước:
-  salt = crypto.getRandomValues(new Uint8Array(16))
-  iv   = crypto.getRandomValues(new Uint8Array(12))
+  iv      = crypto.getRandomValues(new Uint8Array(12))
+  wrapped = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, wrappingKey, privKey)
+  return { wrapped: toBase64(wrapped), iv: toBase64(iv) }
+
+Lý do KHÔNG nhận password ở đây:
+  PBKDF2(600_000) mất ~0.5 giây mỗi lần.
+  Nếu derive trong hàm này → 102 lần gọi × 0.5s = ~51 giây khi đăng ký.
+  wrappingKey được derive 1 lần duy nhất ở AuthContext rồi truyền vào — hàm này chỉ làm AES-GCM.
+
+Nếu bỏ hàm này: private key lưu dạng plaintext trong IndexedDB → ai truy cập máy là lấy được key
+```
+
+#### `deriveWrappingKey(password, salt)`
+```
+Mục đích: Derive CryptoKey từ password dùng để wrap/unwrap mọi private key
+Input:
+  - password (string): mật khẩu người dùng nhập
+  - salt (Uint8Array): random salt 16 bytes — sinh khi register, load từ IndexedDB khi login
+Output: CryptoKey (AES-GCM 256-bit, usage: ['encrypt', 'decrypt'])
+Thư viện: Web Crypto API
+
+Chi tiết:
   keyMaterial = await crypto.subtle.importKey('raw', encode(password), 'PBKDF2', false, ['deriveKey'])
   wrappingKey  = await crypto.subtle.deriveKey(
     { name: 'PBKDF2', salt, iterations: 600_000, hash: 'SHA-256' },
     keyMaterial,
     { name: 'AES-GCM', length: 256 },
     false,
-    ['encrypt']
+    ['encrypt', 'decrypt']
   )
-  wrapped = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, wrappingKey, privKey)
-  return { wrapped: toBase64(wrapped), salt: toBase64(salt), iv: toBase64(iv) }
+  return wrappingKey
 
-Nếu bỏ hàm này: private key lưu dạng plaintext trong IndexedDB → ai truy cập máy là lấy được key
+Gọi ở đâu:
+  - Register: salt = crypto.getRandomValues(new Uint8Array(16)), lưu salt vào IndexedDB
+  - Login:     salt = load từ IndexedDB (privateKeys.wrapSalt)
 ```
 
-#### `unwrapPrivateKey(wrapped, salt, iv, password)`
+#### `unwrapPrivateKey(wrapped, iv, wrappingKey)`
 ```
 Mục đích: Giải mã private key từ IndexedDB khi user login
 Input:
   - wrapped (string base64): private key đã mã hóa
-  - salt (string base64): salt dùng khi wrap
   - iv (string base64): iv dùng khi wrap
-  - password (string): mật khẩu người dùng nhập
+  - wrappingKey (CryptoKey): đã derive sẵn từ deriveWrappingKey()
 Output: Uint8Array (private key gốc)
 Thư viện: Web Crypto API — ngược lại với wrapPrivateKey
 
-Lưu ý: Nếu password sai → crypto.subtle.decrypt throw error → bắt lỗi và hiển thị "Sai mật khẩu"
+Lưu ý: Nếu password sai → deriveWrappingKey() cho key sai → decrypt throw DOMException
+        Bắt lỗi ở AuthContext.login(), throw 'Sai mật khẩu'
 ```
 
 ---
@@ -213,7 +234,9 @@ Chi tiết 4 phép DH:
   IKM = concat(F, DH1, DH2, DH3, DH4)  ← 160 bytes
 
   SK  = HKDF-SHA256(IKM, salt=0x00×32, info="E2EEChat_v1", length=32)
-  SK nhập vào Web Crypto dưới dạng CryptoKey với usage ['encrypt', 'decrypt']
+  SK nhập vào Web Crypto dưới dạng CryptoKey với extractable: TRUE và usage ['encrypt', 'decrypt']
+  // extractable: true là BẮT BUỘC — cần exportKey('raw', SK) để wrap và lưu vào IndexedDB
+  // Nếu extractable: false → exportKey throw "key is not extractable" → không lưu được SK
 
 SAU KHI TÍNH XONG: EK_priv, DH1, DH2, DH3, DH4 = null  ← BẮT BUỘC xóa ngay
 Nếu không xóa: vi phạm Forward Secrecy — ai lấy được bộ nhớ sau này vẫn tính lại được SK
@@ -348,12 +371,18 @@ import Dexie from 'dexie';
 const db = new Dexie('E2EEChatDB');
 db.version(1).stores({
   privateKeys: 'userId',
-  // Lưu: { userId, wrappedIK, saltIK, ivIK, wrappedSPK, saltSPK, ivSPK, wrappedOPKs[] }
-  // wrappedOPKs: [{ id, wrapped, salt, iv }]
+  // Lưu: {
+  //   userId,
+  //   wrapSalt: string (base64),   ← PBKDF2 salt — dùng lại khi login để derive lại wrappingKey
+  //   wrappedIK, ivIK,             ← Identity Key đã wrap (không có saltIK — dùng chung wrapSalt)
+  //   wrappedSPK, ivSPK,           ← Signed PreKey đã wrap
+  //   wrappedOPKs: [{ id, wrapped, iv }]  ← 100 OPK đã wrap
+  // }
+  // Lý do chỉ 1 wrapSalt: wrappingKey derive 1 lần, dùng cho tất cả → không cần salt riêng mỗi key
 
   sessions: 'conversationId',
-  // Lưu: { conversationId, wrappedSK, saltSK, ivSK }
-  // wrappedSK = AES-GCM encrypt(SK, wrappingKey) — SK không bao giờ lưu dạng plaintext
+  // Lưu: { conversationId, wrappedSK, ivSK }
+  // wrappedSK = AES-GCM encrypt(SK_raw_bytes, wrappingKey) — SK không bao giờ lưu dạng plaintext
 });
 ```
 
@@ -365,9 +394,10 @@ Mục đích: Lưu private key đã wrap sau khi đăng ký
 Input:
   userId (string)
   keys: {
-    wrappedIK, saltIK, ivIK,         // Identity Key đã wrap
-    wrappedSPK, saltSPK, ivSPK,      // Signed PreKey đã wrap
-    wrappedOPKs: [{ id, wrapped, salt, iv }]  // 100 OPK đã wrap
+    wrapSalt: string (base64),       // PBKDF2 salt — dùng khi login derive lại wrappingKey
+    wrappedIK, ivIK,                 // Identity Key đã wrap
+    wrappedSPK, ivSPK,               // Signed PreKey đã wrap
+    wrappedOPKs: [{ id, wrapped, iv }]  // 100 OPK đã wrap (không có salt riêng)
   }
 Output: Promise<void>
 ```
@@ -377,15 +407,19 @@ Output: Promise<void>
 Output: object như trên hoặc null nếu chưa có
 ```
 
-#### `saveSession(conversationId, wrappedSK, saltSK, ivSK)`
+#### `saveSession(conversationId, wrappedSK, ivSK)`
 ```
 Mục đích: Lưu Session Key đã wrap sau khi X3DH xong
+Input:
+  - conversationId (string)
+  - wrappedSK (string base64): SK raw bytes đã AES-GCM encrypt bằng wrappingKey
+  - ivSK (string base64): IV dùng khi wrap
 Lý do cần lưu: Reload trang thì SK trong RAM mất — cần unwrap lại từ IndexedDB
 ```
 
 #### `loadSession(conversationId)`
 ```
-Output: { wrappedSK, saltSK, ivSK } hoặc null nếu chưa có session
+Output: { wrappedSK, ivSK } hoặc null nếu chưa có session
 ```
 
 #### `deleteOPK(userId, opkId)`
@@ -397,7 +431,42 @@ Gọi sau: performX3DH_receiver xong → OPK_priv không cần nữa
 #### `hasPrivateKeys(userId)`
 ```
 Output: boolean — kiểm tra user đã có key trong IndexedDB chưa
-Dùng ở Login: nếu false → yêu cầu đăng ký lại (ví dụ đổi máy)
+Dùng ở Login: nếu false → yêu cầu đăng ký lại hoặc import file .e2ee
+```
+
+#### `exportKeysToFile(userId)`
+```
+Mục đích: Đóng gói toàn bộ wrapped keys từ IndexedDB thành file .e2ee để chuyển thiết bị
+Input: userId (string)
+Output: void (trigger browser download)
+
+Chi tiết:
+  data = await db.privateKeys.get(userId)
+  // data đã chứa keys đã wrap → an toàn vì password vẫn cần để unwrap
+  blob = new Blob([JSON.stringify(data)], { type: 'application/json' })
+  url  = URL.createObjectURL(blob)
+  <a href=url download="e2ee-keys-{userId}.e2ee"> click programmatically
+  URL.revokeObjectURL(url)  // giải phóng memory ngay sau download
+
+An toàn vì: file .e2ee chỉ chứa wrapped keys — kẻ có file vẫn cần đúng password để decrypt.
+            Tương đương "backup mã hóa" — không lộ private key nếu password đủ mạnh.
+```
+
+#### `importKeysFromFile(file)`
+```
+Mục đích: Đọc file .e2ee và lưu vào IndexedDB của thiết bị mới
+Input: File object (từ <input type="file">)
+Output: Promise<string> — userId lấy từ file, để Login.jsx dùng prefill username
+
+Chi tiết:
+  text = await file.text()
+  data = JSON.parse(text)
+  // Validate: phải có đủ các field (wrapSalt, wrappedIK, ivIK, wrappedSPK, ivSPK, wrappedOPKs)
+  await db.privateKeys.put(data)
+  return data.userId
+
+Sau khi import: user login bình thường — unwrap bằng password như thường lệ.
+Nếu import file sai / thiếu field: throw Error('File .e2ee không hợp lệ')
 ```
 
 ---
@@ -469,7 +538,8 @@ createConversation(token, recipientId)
 
 listConversations(token)
   // GET /conversations
-  // Return: [{ conversationId, peer: {id, username}, fingerprintVerified, lastMessageAt }]
+  // Return: [{ conversationId, peer: {id, username, ikPub: string (base64)}, fingerprintVerified, lastMessageAt }]
+  // ikPub của peer được cache tại đây — dùng cho FingerprintModal mà không cần fetch thêm
 
 verifyFingerprint(token, conversationId)
   // PATCH /conversations/:convId/fingerprint
@@ -595,21 +665,25 @@ cho mọi component mà không cần truyền props qua nhiều tầng.
 register(username, password)
   // 1. Gọi api.register(username, password)
   // 2. Sinh IK, SPK, 100 OPK qua keyGen.js
-  // 3. Derive wrappingKey = PBKDF2(password)
-  // 4. Wrap từng private key qua keyGen.wrapPrivateKey()
-  // 5. Lưu tất cả wrapped key vào IndexedDB qua storage.savePrivateKeys()
-  // 6. Gọi api.uploadKeys() với public keys
-  // 7. Gọi api.login() để lấy token
-  // 8. Set state: token, userId, username, IK_priv, IK_pub, SPK_priv, wrappingKey
+  // 3. Sinh wrapSalt = crypto.getRandomValues(new Uint8Array(16))
+  // 4. Derive wrappingKey = keyGen.deriveWrappingKey(password, wrapSalt)  ← PBKDF2 chạy 1 LẦN DUY NHẤT
+  // 5. Wrap từng private key: keyGen.wrapPrivateKey(privKey, wrappingKey)  ← chỉ AES-GCM, không PBKDF2
+  // 6. Lưu vào IndexedDB: storage.savePrivateKeys(userId, { wrapSalt, wrappedIK, ivIK, ... })
+  // 7. Gọi api.uploadKeys() với public keys
+  // 8. Gọi api.login() để lấy token
+  // 9. Set state: token, userId, username, IK_priv, IK_pub, SPK_priv, wrappingKey
 
 login(username, password)
   // 1. Gọi api.login() → { token, userId, username }
-  // 2. Derive wrappingKey = PBKDF2(password, salt từ IndexedDB)
-  // 3. Load wrapped keys từ IndexedDB qua storage.loadPrivateKeys()
-  // 4. Unwrap từng key qua keyGen.unwrapPrivateKey()
-  // 5. Load tất cả session (SK) từ IndexedDB, unwrap bằng wrappingKey
-  // 6. Set state đầy đủ
-  // Lỗi password sai: unwrap throw error → bắt và throw 'Sai mật khẩu'
+  // 2. Gọi storage.hasPrivateKeys(userId)
+  //    - false → gọi api.logout(token) ngay, throw Error('DEVICE_NOT_REGISTERED')
+  //    - true  → tiếp tục
+  // 3. Load wrapped keys từ IndexedDB: data = await storage.loadPrivateKeys(userId)
+  // 4. Derive wrappingKey = keyGen.deriveWrappingKey(password, fromBase64(data.wrapSalt))
+  // 5. Unwrap từng key: keyGen.unwrapPrivateKey(wrapped, iv, wrappingKey)
+  //    - Nếu DOMException → password sai → throw Error('Sai mật khẩu')
+  // 6. sessionKeys KHÔNG load sẵn — lazy-load khi mở từng conversation (xem useMessages)
+  // 7. Set state: token, userId, username, IK_priv, IK_pub, SPK_priv, wrappingKey
 
 logout()
   // 1. Gọi api.logout(token)
@@ -658,9 +732,12 @@ Kết nối WebSocket, nhận tin nhắn mới, decrypt, cập nhật state onli
 
 ### Interface
 ```js
-function useWebSocket() {
-  // Lấy token, userId, IK_priv, wrappingKey từ useAuth()
-  // Lấy sessionKeys (Map<conversationId, CryptoKey>) từ... (xem bên dưới)
+// sessionKeys quản lý ở Chat.jsx, truyền vào hook — không để trong hook vì handleSend cũng cần dùng
+function useWebSocket({ sessionKeys, setSessionKeys }) {
+  // sessionKeys: Map<conversationId, CryptoKey> — đọc để decrypt tin đến
+  // setSessionKeys: dispatch để lưu SK mới sau X3DH receiver
+
+  // Lấy token, userId, IK_priv, wrappingKey từ useAuth() bên trong hook
 
   return {
     onlineUsers: Set<userId>,    // Set userId đang online
@@ -810,8 +887,24 @@ Form đăng nhập. Khi submit: gọi API → nhận token → unwrap key từ I
 - Button: "Đăng nhập"
 - Link: "Chưa có tài khoản? Đăng ký"
 - Error message: "Sai username hoặc password" (gộp chung như backend)
-- Warning: nếu IndexedDB không có key → "Máy này chưa có dữ liệu mã hóa. 
-            Vui lòng đăng ký lại hoặc dùng đúng thiết bị đã đăng ký."
+- Error DEVICE_NOT_REGISTERED:
+    "Tài khoản này đã đăng ký trên thiết bị khác.
+     Hãy dùng đúng thiết bị đó, hoặc import file backup (.e2ee) bên dưới."
+- Nút "Import file backup (.e2ee)":
+    <input type="file" accept=".e2ee"> → gọi storage.importKeysFromFile(file)
+    Sau khi import thành công: hiện "Import thành công — đăng nhập lại"
+    Username input được prefill bằng userId lấy từ file (storage.importKeysFromFile trả về userId)
+```
+
+### Luồng xử lý lỗi DEVICE_NOT_REGISTERED
+```
+AuthContext.login() ném Error('DEVICE_NOT_REGISTERED') khi:
+  api.login() thành công (sai password → lỗi khác)
+  nhưng storage.hasPrivateKeys(userId) = false
+
+Login.jsx bắt lỗi này và hiển thị UI import file.
+Lưu ý: api.logout(token) đã được gọi bên trong AuthContext.login() trước khi throw,
+        nên token không bị treo trong RAM.
 ```
 
 ### Sau khi thành công
@@ -843,14 +936,19 @@ Layout trang chat chính. CHỈ lo bố cục và truyền props — không có 
 ### State quản lý trong Chat.jsx
 ```js
 const [activeConversationId, setActiveConversationId] = useState(null);
-const [activePeer, setActivePeer] = useState(null);  // { id, username }
-// conversations và messages quản lý trong hooks
+const [activePeer, setActivePeer] = useState(null);  // { id, username, ikPub: Uint8Array }
+const [conversations, setConversations] = useState([]);  // cache từ listConversations
+const [sessionKeys, setSessionKeys] = useState(new Map());
+// sessionKeys: Map<conversationId, CryptoKey>
+// - Nguồn 1: handleSend tạo SK mới khi gửi tin X3DH đầu tiên
+// - Nguồn 2: useWebSocket nhận SK mới sau khi chạy X3DH receiver
+// - Nguồn 3: useMessages lazy-load SK từ IndexedDB khi mở conversation
 ```
 
 ### Hooks dùng
 ```js
-const { token, userId, IK_priv, wrappingKey } = useAuth();
-const { onlineUsers, isConnected, onNewMessage } = useWebSocket();
+const { token, userId, IK_priv, IK_pub, wrappingKey } = useAuth();
+const { onlineUsers, isConnected, onNewMessage } = useWebSocket({ sessionKeys, setSessionKeys });
 const { messages, isLoading, hasMore, loadMore, addMessage } = useMessages(activeConversationId);
 ```
 
@@ -883,10 +981,19 @@ const { messages, isLoading, hasMore, loadMore, addMessage } = useMessages(activ
 
 ### Sidebar KHÔNG hiển thị preview nội dung tin nhắn
 ```
-Lý do: Server chỉ có ciphertext, không có plaintext.
-       Để hiện preview cần decrypt — chỉ làm được sau khi đã load message history.
-       Với đồ án, chỉ hiển thị: [username] + [lastMessageAt] là đủ và đúng.
-       Đây là hệ quả đúng của mô hình Blind Server — ghi vào báo cáo.
+Chỉ hiển thị: [username] + [lastMessageAt]
+
+Lý do kỹ thuật: Server chỉ có ciphertext, không có plaintext.
+  Để hiện preview cần decrypt — chỉ làm được sau khi đã load message history.
+  Lazy-load từng conversation khi user click → không có plaintext sẵn trong sidebar.
+
+Đây là hệ quả đúng của mô hình Blind Server — ghi vào báo cáo:
+  "Sidebar không hiển thị preview là do thiết kế, không phải thiếu sót.
+   Server không bao giờ có plaintext nên không thể cung cấp dữ liệu để preview."
+
+Câu hỏi GV: "Tại sao không decrypt trước tất cả để hiện preview?"
+Trả lời: "Cần tải xuống và decrypt toàn bộ tin nhắn mới nhất của mọi conversation khi mở app —
+          tốn thời gian và bộ nhớ không cần thiết. Ưu tiên decrypt lazy khi user mở conversation."
 ```
 
 ---
@@ -919,9 +1026,28 @@ Lý do: Server chỉ có ciphertext, không có plaintext.
 
 ### Avatar
 ```
-Không upload ảnh — dùng chữ cái đầu của username làm avatar.
-"Bob" → hiển thị chữ "B" trên nền màu được tính từ hash của userId.
-Lý do: đơn giản, không cần upload, mỗi user có màu riêng nhất quán.
+Không upload ảnh — dùng chữ cái đầu của username + màu tính từ hash userId.
+
+Quy tắc hiển thị chữ:
+  "Bob"   → "B"
+  "Alice" → "A"
+  "Alish" → "A"   ← cùng chữ, nhưng màu nền khác nhau vì userId là UUID riêng biệt
+
+Quy tắc tính màu (dùng toàn bộ userId, không chỉ ký tự đầu):
+  function getUserColor(userId) {
+    let hash = 0;
+    for (let i = 0; i < userId.length; i++) {
+      hash = (hash * 31 + userId.charCodeAt(i)) | 0;  // bitwise OR để giữ 32-bit int
+    }
+    const palette = ['#E57373','#81C784','#64B5F6','#FFB74D','#BA68C8','#4DD0E1','#A1887F'];
+    return palette[Math.abs(hash) % palette.length];
+  }
+
+Tại sao dùng toàn bộ userId:
+  - userId là UUID (ví dụ: "a3f8c2d1-...") — hash toàn bộ chuỗi cho phân phối đều
+  - Nếu chỉ hash ký tự đầu: mọi user tên "A..." đều có cùng hash → cùng màu → không phân biệt được
+  - Alice (userId X) và Alish (userId Y): cùng chữ "A" nhưng màu nền khác → phân biệt được
+  - Màu nhất quán: cùng userId → cùng màu ở mọi nơi trong app (sidebar, chat header)
 ```
 
 ---
@@ -1000,18 +1126,24 @@ onSend được định nghĩa trong Chat.jsx:
 async function handleSend(plaintext) {
   // Bước 1: Lấy SK cho conversation này
   let SK = sessionKeys.get(activeConversationId);
+  let x3dhFields = {};
 
   // Bước 2: Nếu chưa có SK → đây là tin đầu tiên → X3DH
   if (!SK) {
     const bobBundle = await api.fetchKeyBundle(token, activePeer.id);
-    // bobBundle trả về base64 strings → convert sang Uint8Array
-    const { SK: newSK, EK_pub } = await x3dh.performX3DH_sender(myKeys, bobBundle);
-    SK = newSK;
-    // Lưu SK
-    const wrapped = await keyGen.wrapPrivateKey(SK_bytes, wrappingKey);
-    await storage.saveSession(activeConversationId, wrapped.wrapped, wrapped.salt, wrapped.iv);
-    sessionKeys.set(activeConversationId, SK);
-    // Đính kèm X3DH fields vào tin gửi
+    // bobBundle trả về base64 strings → convert sang Uint8Array trước khi truyền vào x3dh
+    const { SK: newSK, EK_pub } = await x3dh.performX3DH_sender(
+      { IK_priv, IK_pub },
+      bobBundle  // đã convert sang Uint8Array
+    );
+    SK = newSK;  // CryptoKey, extractable: true
+
+    // PHẢI export SK ra bytes trước khi wrap — CryptoKey không wrap trực tiếp được
+    const skRaw = await crypto.subtle.exportKey('raw', SK);  // → ArrayBuffer
+    const { wrapped, iv: ivSK } = await keyGen.wrapPrivateKey(new Uint8Array(skRaw), wrappingKey);
+    await storage.saveSession(activeConversationId, wrapped, ivSK);
+
+    setSessionKeys(prev => new Map(prev).set(activeConversationId, SK));
     x3dhFields = { ekPub: toBase64(EK_pub), opkId: bobBundle.opkId, ikPub: toBase64(IK_pub) };
   }
 
@@ -1020,12 +1152,12 @@ async function handleSend(plaintext) {
     plaintext, SK, activeConversationId, userId
   );
 
-  // Bước 4: Gửi qua WebSocket
+  // Bước 4: Gửi qua WebSocket (x3dhFields rỗng nếu không phải tin X3DH đầu)
   sendSocketMessage({
     type: 'message',
     conversationId: activeConversationId,
     ciphertext, iv, aad,
-    ...x3dhFields  // undefined nếu không phải tin đầu
+    ...x3dhFields
   });
 }
 ```
@@ -1040,8 +1172,9 @@ async function handleSend(plaintext) {
   isOpen: boolean,
   onClose: () => void,
   onVerified: () => void,
-  myIKPub: Uint8Array,
-  peerIKPub: Uint8Array,
+  myIKPub: Uint8Array,          // lấy từ useAuth().IK_pub
+  peerIKPub: Uint8Array,        // lấy từ conversations state: fromBase64(activePeer.ikPub)
+                                // KHÔNG fetch API khi mở modal — đã cache sẵn khi listConversations
   peerUsername: string,
   conversationId: string
 }
