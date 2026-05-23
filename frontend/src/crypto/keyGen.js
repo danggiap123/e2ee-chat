@@ -18,22 +18,21 @@ function encode(str) {
 
 export async function generateIdentityKey() {
   await sodium.ready;
-  // Dùng crypto_sign_keypair() thay vì crypto_box_keypair() vì:
-  // - IK cần ký SPK bằng Ed25519 → cần Ed25519 secret key (64 bytes)
-  // - crypto_box_keypair() sinh X25519 key (32 bytes) → crypto_sign_detached sẽ lỗi "invalid privateKey length"
-  // - Khi dùng IK trong DH: chuyển sang X25519 bằng crypto_sign_ed25519_sk/pk_to_curve25519()
   const pair = sodium.crypto_sign_keypair();
   return {
-    IK_pub:  pair.publicKey,   // Uint8Array 32 bytes — Ed25519 public key
-    IK_priv: pair.privateKey,  // Uint8Array 64 bytes — Ed25519 secret key (seed + pub ghép lại)
+    IK_pub:    pair.publicKey,   // Uint8Array 32 bytes — Ed25519 public key
+    IK_secret: pair.privateKey,  // Uint8Array 64 bytes — Ed25519 secret key (seed 32B + pub 32B)
+    // Tên IK_secret: phân biệt rõ 2 dạng khóa bí mật của IK:
+    //   IK_secret (64B Ed25519) → chỉ dùng để ký SPK, lưu IndexedDB
+    //   IK_priv   (32B X25519)  → convert từ IK_secret khi cần DH, cùng format SPK_priv/OPK_priv
   };
 }
 
-export async function generateSignedPreKey(IK_priv) {
+export async function generateSignedPreKey(IK_secret) {
   await sodium.ready;
   const pair = sodium.crypto_box_keypair();
-  // Ed25519 sign: IK_priv ký lên SPK_pub → bất kỳ ai có IK_pub đều verify được
-  const SPK_sig = sodium.crypto_sign_detached(pair.publicKey, IK_priv);
+  // IK_secret (64B Ed25519) ký lên SPK_pub → bất kỳ ai có IK_pub đều verify được
+  const SPK_sig = sodium.crypto_sign_detached(pair.publicKey, IK_secret);
   return {
     SPK_pub:  pair.publicKey,   // Uint8Array 32 bytes
     SPK_priv: pair.privateKey,  // Uint8Array 32 bytes

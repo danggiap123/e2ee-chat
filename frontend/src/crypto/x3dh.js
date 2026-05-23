@@ -45,7 +45,7 @@ export async function verifySignedPreKey(IK_pub_B, SPK_sig, SPK_pub_B) {
 export async function performX3DH_sender(myKeys, bobBundle) {
   await sodium.ready;
 
-  const { IK_priv, IK_pub } = myKeys;
+  const { IK_secret, IK_pub } = myKeys;
 
   // bobBundle chứa base64 strings từ server → phải convert sang Uint8Array
   const IK_pub_B  = fromBase64(bobBundle.ikPub);
@@ -60,13 +60,14 @@ export async function performX3DH_sender(myKeys, bobBundle) {
   // Bước 2: sinh Ephemeral Key — dùng 1 lần duy nhất cho lần chat này
   const EK = sodium.crypto_box_keypair();
 
-  // Bước 3: convert IK Ed25519 → X25519 để dùng được với crypto_scalarmult
-  // IK_priv là Ed25519 (64 bytes), crypto_scalarmult cần X25519 (32 bytes)
-  const IK_priv_x = sodium.crypto_sign_ed25519_sk_to_curve25519(IK_priv);
+  // Bước 3: convert IK Ed25519 → X25519 để dùng với crypto_scalarmult
+  // IK_secret (64B Ed25519) → IK_priv (32B X25519) — cùng format SPK_priv, OPK_priv
+  // IK_pub_B  (32B Ed25519) → IK_pub_B_x (32B X25519) — để tính DH2
+  const IK_priv   = sodium.crypto_sign_ed25519_sk_to_curve25519(IK_secret);
   const IK_pub_B_x = sodium.crypto_sign_ed25519_pk_to_curve25519(IK_pub_B);
 
-  // Bước 4: 4 phép Diffie-Hellman (tất cả đều dùng X25519)
-  const DH1 = sodium.crypto_scalarmult(IK_priv_x,    SPK_pub_B);  // mutual auth
+  // Bước 4: 4 phép Diffie-Hellman — tất cả X25519, cùng format
+  const DH1 = sodium.crypto_scalarmult(IK_priv,      SPK_pub_B);   // mutual auth
   const DH2 = sodium.crypto_scalarmult(EK.privateKey, IK_pub_B_x); // mutual auth
   const DH3 = sodium.crypto_scalarmult(EK.privateKey, SPK_pub_B);  // forward secrecy
   const DH4 = sodium.crypto_scalarmult(EK.privateKey, OPK_pub_B);  // forward secrecy (OPK)
@@ -81,7 +82,7 @@ export async function performX3DH_sender(myKeys, bobBundle) {
   // Bước 6: xóa vật liệu nhạy cảm khỏi RAM ngay sau khi tính xong
   // — Forward Secrecy: ai dump memory sau này cũng không tính lại được SK
   DH1.fill(0); DH2.fill(0); DH3.fill(0); DH4.fill(0);
-  IK_priv_x.fill(0);
+  IK_priv.fill(0);      // X25519 key tạm — xóa ngay sau khi DH xong
   EK.privateKey.fill(0);
 
   return {
@@ -97,22 +98,24 @@ export async function performX3DH_sender(myKeys, bobBundle) {
 export async function performX3DH_receiver(myKeys, initMsg) {
   await sodium.ready;
 
-  const { IK_priv, SPK_priv, OPK_priv } = myKeys;
-  // OPK_priv là Uint8Array — caller load từ IndexedDB trước khi gọi hàm này
+  const { IK_secret, SPK_priv, OPK_priv } = myKeys;
+  // OPK_priv (32B X25519) — caller load từ IndexedDB trước khi gọi hàm này
 
   // initMsg chứa base64 strings từ tin nhắn đầu tiên của Alice
   const IK_pub_A = fromBase64(initMsg.ikPub);
   const EK_pub_A = fromBase64(initMsg.ekPub);
 
-  // Convert IK Ed25519 → X25519 cho cả Bob (priv) lẫn Alice (pub)
-  const IK_priv_x  = sodium.crypto_sign_ed25519_sk_to_curve25519(IK_priv);
+  // Convert IK Ed25519 → X25519: cùng logic với sender
+  // IK_secret (64B Ed25519) → IK_priv (32B X25519) — cùng format SPK_priv, OPK_priv
+  // IK_pub_A  (32B Ed25519) → IK_pub_A_x (32B X25519)
+  const IK_priv    = sodium.crypto_sign_ed25519_sk_to_curve25519(IK_secret);
   const IK_pub_A_x = sodium.crypto_sign_ed25519_pk_to_curve25519(IK_pub_A);
 
-  // 4 phép DH chiều ngược — phải cho ra cùng kết quả với sender
-  const DH1 = sodium.crypto_scalarmult(SPK_priv,   IK_pub_A_x); // đối xứng với DH1 Alice
-  const DH2 = sodium.crypto_scalarmult(IK_priv_x,  EK_pub_A);   // đối xứng với DH2 Alice
-  const DH3 = sodium.crypto_scalarmult(SPK_priv,   EK_pub_A);   // đối xứng với DH3 Alice
-  const DH4 = sodium.crypto_scalarmult(OPK_priv,   EK_pub_A);   // đối xứng với DH4 Alice
+  // 4 phép DH chiều ngược — tất cả X25519, ra cùng kết quả với sender
+  const DH1 = sodium.crypto_scalarmult(SPK_priv, IK_pub_A_x); // đối xứng DH1 Alice
+  const DH2 = sodium.crypto_scalarmult(IK_priv,  EK_pub_A);   // đối xứng DH2 Alice
+  const DH3 = sodium.crypto_scalarmult(SPK_priv, EK_pub_A);   // đối xứng DH3 Alice
+  const DH4 = sodium.crypto_scalarmult(OPK_priv, EK_pub_A);   // đối xứng DH4 Alice
 
   const F   = new Uint8Array(32).fill(0xFF);
   const IKM = concat(F, DH1, DH2, DH3, DH4);
@@ -120,8 +123,8 @@ export async function performX3DH_receiver(myKeys, initMsg) {
   const SK = await hkdf(IKM);
 
   DH1.fill(0); DH2.fill(0); DH3.fill(0); DH4.fill(0);
-  IK_priv_x.fill(0);
-  OPK_priv.fill(0); // OPK đã dùng → xóa ngay, không dùng lại bao giờ
+  IK_priv.fill(0);   // X25519 key tạm — xóa ngay sau khi DH xong
+  OPK_priv.fill(0);  // OPK đã dùng → xóa, không dùng lại bao giờ
 
   return { SK };
 }

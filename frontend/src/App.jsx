@@ -50,19 +50,20 @@ async function runTests() {
 
   // ── Test 1: sinh Identity Key ────────────────────────────────────────────
   try {
-    const { IK_pub, IK_priv } = await generateIdentityKey();
-    // Ed25519: pub=32 bytes, priv=64 bytes (seed 32B + public 32B ghép lại)
-    if (IK_pub.length === 32 && IK_priv.length === 64)
+    const IK_test = await generateIdentityKey();
+    const { IK_pub, IK_secret } = IK_test;
+    // IK_pub: 32B Ed25519 public, IK_secret: 64B Ed25519 (seed 32B + pub 32B)
+    if (IK_pub.length === 32 && IK_secret.length === 64)
       pass('generateIdentityKey', `pub=${toBase64(IK_pub).slice(0, 12)}...`);
     else
-      fail('generateIdentityKey', `sai length: pub=${IK_pub.length} priv=${IK_priv.length}`);
+      fail('generateIdentityKey', `sai length: pub=${IK_pub.length} secret=${IK_secret.length}`);
   } catch (e) { fail('generateIdentityKey', e.message); }
 
   // ── Test 2: sinh Signed PreKey + verify chữ ký ──────────────────────────
   let IK_A, SPK_A;
   try {
     IK_A  = await generateIdentityKey();
-    SPK_A = await generateSignedPreKey(IK_A.IK_priv);
+    SPK_A = await generateSignedPreKey(IK_A.IK_secret);
     const valid = await verifySignedPreKey(IK_A.IK_pub, SPK_A.SPK_sig, SPK_A.SPK_pub);
     if (valid)
       pass('generateSignedPreKey + verify', `sig=${toBase64(SPK_A.SPK_sig).slice(0, 12)}...`);
@@ -96,20 +97,20 @@ async function runTests() {
   try {
     const salt = crypto.getRandomValues(new Uint8Array(16));
     wrappingKey_A = await deriveWrappingKey('mat_khau_alice_123', salt);
-    const { wrapped, iv } = await wrapPrivateKey(IK_A.IK_priv, wrappingKey_A);
+    const { wrapped, iv } = await wrapPrivateKey(IK_A.IK_secret, wrappingKey_A);
     const recovered   = await unwrapPrivateKey(wrapped, iv, wrappingKey_A);
-    const same = IK_A.IK_priv.every((b, i) => b === recovered[i]);
+    const same = IK_A.IK_secret.every((b, i) => b === recovered[i]);
     if (same)
-      pass('wrap → unwrap IK_priv', 'byte-for-byte identical');
+      pass('wrap → unwrap IK_secret', 'byte-for-byte identical');
     else
-      fail('wrap → unwrap IK_priv', 'bytes khác nhau sau unwrap');
-  } catch (e) { fail('wrap → unwrap IK_priv', e.message); }
+      fail('wrap → unwrap IK_secret', 'bytes khác nhau sau unwrap');
+  } catch (e) { fail('wrap → unwrap IK_secret', e.message); }
 
   // ── Test 6: unwrap với password sai phải throw ───────────────────────────
   try {
     const salt2       = crypto.getRandomValues(new Uint8Array(16));
     const wrongKey    = await deriveWrappingKey('sai_mat_khau', salt2);
-    const { wrapped, iv } = await wrapPrivateKey(IK_A.IK_priv, wrappingKey_A);
+    const { wrapped, iv } = await wrapPrivateKey(IK_A.IK_secret, wrappingKey_A);
     await unwrapPrivateKey(wrapped, iv, wrongKey);
     fail('unwrap wrong password', 'không throw — SAI');
   } catch {
@@ -120,7 +121,7 @@ async function runTests() {
   let SK_alice, SK_bob;
   try {
     const IK_B  = await generateIdentityKey();
-    const SPK_B = await generateSignedPreKey(IK_B.IK_priv);
+    const SPK_B = await generateSignedPreKey(IK_B.IK_secret);
     const OPKs_B = await generateOneTimePreKeys(1);
 
     // Giả lập bundle server trả về (base64 như thực tế)
@@ -133,7 +134,7 @@ async function runTests() {
     };
 
     const senderResult = await performX3DH_sender(
-      { IK_priv: IK_A.IK_priv, IK_pub: IK_A.IK_pub },
+      { IK_secret: IK_A.IK_secret, IK_pub: IK_A.IK_pub },
       bobBundle
     );
     SK_alice = senderResult.SK;
@@ -147,9 +148,9 @@ async function runTests() {
 
     const receiverResult = await performX3DH_receiver(
       {
-        IK_priv:  IK_B.IK_priv,
-        SPK_priv: SPK_B.SPK_priv,
-        OPK_priv: OPKs_B[0].OPK_priv,
+        IK_secret: IK_B.IK_secret,
+        SPK_priv:  SPK_B.SPK_priv,
+        OPK_priv:  OPKs_B[0].OPK_priv,
       },
       initMsg
     );
