@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(cd d:\\\\doantotnghiep\\\\e2ee-chat\\\\backend; $env:NODE_PATH = \"node_modules\"; node ..\\\\scripts\\\\add-employee.js test@company.com 2>&1)"
+    ]
+  }
+}

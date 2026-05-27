@@ -19,10 +19,10 @@ async function hkdf(ikm) {
   // Bước 2: derive AES-GCM 256-bit key theo HKDF-SHA256
   return crypto.subtle.deriveKey(
     {
-      name:  'HKDF',
-      hash:  'SHA-256',
-      salt:  new Uint8Array(32),                    // 0x00 × 32 — theo Signal spec
-      info:  new TextEncoder().encode('E2EEChat_v1'), // domain separation
+      name: 'HKDF',
+      hash: 'SHA-256',
+      salt: new Uint8Array(32),                    // 0x00 × 32 — theo Signal spec
+      info: new TextEncoder().encode('E2EEChat_v1'), // domain separation
     },
     keyMaterial,
     { name: 'AES-GCM', length: 256 },
@@ -48,9 +48,9 @@ export async function performX3DH_sender(myKeys, bobBundle) {
   const { IK_secret, IK_pub } = myKeys;
 
   // bobBundle chứa base64 strings từ server → phải convert sang Uint8Array
-  const IK_pub_B  = fromBase64(bobBundle.ikPub);
+  const IK_pub_B = fromBase64(bobBundle.ikPub);
   const SPK_pub_B = fromBase64(bobBundle.spkPub);
-  const SPK_sig   = fromBase64(bobBundle.spkSig);
+  const SPK_sig = fromBase64(bobBundle.spkSig);
   const OPK_pub_B = fromBase64(bobBundle.opkPub);
 
   // Bước 1: verify chữ ký SPK — nếu false thì dừng ngay
@@ -63,23 +63,23 @@ export async function performX3DH_sender(myKeys, bobBundle) {
   // Bước 3: convert IK Ed25519 → X25519 để dùng với crypto_scalarmult
   // IK_secret (64B Ed25519) → IK_priv (32B X25519) — cùng format SPK_priv, OPK_priv
   // IK_pub_B  (32B Ed25519) → IK_pub_B_x (32B X25519) — để tính DH2
-  const IK_priv   = sodium.crypto_sign_ed25519_sk_to_curve25519(IK_secret);
+  const IK_priv = sodium.crypto_sign_ed25519_sk_to_curve25519(IK_secret);
   const IK_pub_B_x = sodium.crypto_sign_ed25519_pk_to_curve25519(IK_pub_B);
 
   // Bước 4: 4 phép Diffie-Hellman — tất cả X25519, cùng format
-  const DH1 = sodium.crypto_scalarmult(IK_priv,      SPK_pub_B);   // mutual auth
+  const DH1 = sodium.crypto_scalarmult(IK_priv, SPK_pub_B);   // mutual auth
   const DH2 = sodium.crypto_scalarmult(EK.privateKey, IK_pub_B_x); // mutual auth
   const DH3 = sodium.crypto_scalarmult(EK.privateKey, SPK_pub_B);  // forward secrecy
   const DH4 = sodium.crypto_scalarmult(EK.privateKey, OPK_pub_B);  // forward secrecy (OPK)
 
   // Bước 4: ghép IKM = F(0xFF×32) || DH1 || DH2 || DH3 || DH4 = 160 bytes
-  const F   = new Uint8Array(32).fill(0xFF); // phân biệt X25519 vs X448 theo Signal spec
+  const F = new Uint8Array(32).fill(0xFF); // phân biệt X25519 vs X448 theo Signal spec
   const IKM = concat(F, DH1, DH2, DH3, DH4);
 
   // Bước 5: HKDF → Session Key
   const SK = await hkdf(IKM);
 
-  // Bước 6: xóa vật liệu nhạy cảm khỏi RAM ngay sau khi tính xong
+  // Bước 6: xóa dữ liệu nhạy cảm khỏi RAM ngay sau khi tính xong tránh bị dump memory sau này
   // — Forward Secrecy: ai dump memory sau này cũng không tính lại được SK
   DH1.fill(0); DH2.fill(0); DH3.fill(0); DH4.fill(0);
   IK_priv.fill(0);      // X25519 key tạm — xóa ngay sau khi DH xong
@@ -108,16 +108,16 @@ export async function performX3DH_receiver(myKeys, initMsg) {
   // Convert IK Ed25519 → X25519: cùng logic với sender
   // IK_secret (64B Ed25519) → IK_priv (32B X25519) — cùng format SPK_priv, OPK_priv
   // IK_pub_A  (32B Ed25519) → IK_pub_A_x (32B X25519)
-  const IK_priv    = sodium.crypto_sign_ed25519_sk_to_curve25519(IK_secret);
+  const IK_priv = sodium.crypto_sign_ed25519_sk_to_curve25519(IK_secret);
   const IK_pub_A_x = sodium.crypto_sign_ed25519_pk_to_curve25519(IK_pub_A);
 
   // 4 phép DH chiều ngược — tất cả X25519, ra cùng kết quả với sender
   const DH1 = sodium.crypto_scalarmult(SPK_priv, IK_pub_A_x); // đối xứng DH1 Alice
-  const DH2 = sodium.crypto_scalarmult(IK_priv,  EK_pub_A);   // đối xứng DH2 Alice
+  const DH2 = sodium.crypto_scalarmult(IK_priv, EK_pub_A);   // đối xứng DH2 Alice
   const DH3 = sodium.crypto_scalarmult(SPK_priv, EK_pub_A);   // đối xứng DH3 Alice
   const DH4 = sodium.crypto_scalarmult(OPK_priv, EK_pub_A);   // đối xứng DH4 Alice
 
-  const F   = new Uint8Array(32).fill(0xFF);
+  const F = new Uint8Array(32).fill(0xFF);
   const IKM = concat(F, DH1, DH2, DH3, DH4);
 
   const SK = await hkdf(IKM);

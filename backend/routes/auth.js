@@ -33,14 +33,24 @@ const loginLimiter = rateLimit({
 // POST /auth/register
 router.post('/register', registerLimiter, async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, password, email } = req.body;
 
-    if (!username || !password) {
-      return res.status(400).json({ error: 'username và password là bắt buộc' });
+    if (!username || !password || !email) {
+      return res.status(400).json({ error: 'username, password và email là bắt buộc' });
     }
 
     if (password.length < 8) {
       return res.status(400).json({ error: 'Password phải có ít nhất 8 ký tự' });
+    }
+
+    // Kiểm tra whitelist và tạo user trong 1 transaction —
+    // đảm bảo không có race condition giữa lúc check và lúc update usedAt
+    const allowed = await prisma.allowedEmail.findUnique({ where: { email } });
+    if (!allowed) {
+      return res.status(403).json({ error: 'Email này không được phép đăng ký' });
+    }
+    if (allowed.usedAt !== null) {
+      return res.status(409).json({ error: 'Email này đã được sử dụng để đăng ký tài khoản' });
     }
 
     const existing = await prisma.user.findUnique({ where: { username } });
@@ -50,8 +60,14 @@ router.post('/register', registerLimiter, async (req, res) => {
 
     const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
-    await prisma.user.create({
-      data: { username, passwordHash: hash },
+    await prisma.$transaction(async (tx) => {
+      await tx.user.create({
+        data: { username, email, passwordHash: hash },
+      });
+      await tx.allowedEmail.update({
+        where: { email },
+        data: { usedAt: new Date() },
+      });
     });
 
     return res.status(201).json({ message: 'Đăng ký thành công, vui lòng đăng nhập' });
@@ -83,7 +99,7 @@ router.post('/login', loginLimiter, async (req, res) => {
     const token = jwt.sign(
       { userId: user.id, username: user.username },
       process.env.JWT_SECRET,
-      { expiresIn: '7d' }
+      { expiresIn: '1d' }
     );
 
     return res.json({ token, userId: user.id, username: user.username });//username trong payload JWT để client hiển thị mà không cần gọi API

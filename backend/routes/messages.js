@@ -31,7 +31,6 @@ router.post('/', requireAuth, async (req, res) => {
     }
 
     // Server chỉ lưu bản mã — không đọc được nội dung (Blind Server model)
-    // Nếu IV trùng → PostgreSQL tự throw lỗi P2002 → bắt trong catch bên dưới
     const message = await prisma.message.create({
       data: {
         conversationId,

@@ -11,6 +11,7 @@ datasource db {
 model User {
   id           String   @id @default(uuid()) // primary key, tự sinh UUID
   username     String   @unique              // không được trùng username
+  email        String   @unique              // email công ty, phải có trong AllowedEmail trước khi đăng ký
   passwordHash String                        // mật khẩu đã hash bằng argon2id, không lưu plaintext
   createdAt    DateTime @default(now())      // tự điền thời gian tạo tài khoản
 
@@ -47,6 +48,14 @@ model Conversation {
   @@unique([participantA, participantB]) // không thể có 2 conversation giữa cùng 1 cặp user
   @@index([participantA])
   @@index([participantB])
+}
+
+// Whitelist email được phép đăng ký — IT Admin thêm trực tiếp vào DB
+model AllowedEmail {
+  id        String    @id @default(uuid())
+  email     String    @unique              // mỗi email chỉ xuất hiện 1 lần
+  usedAt    DateTime?                      // null = chưa dùng, có giá trị = đã đăng ký xong
+  createdAt DateTime  @default(now())
 }
 
 // Bảng tin nhắn đã mã hóa — server không đọc được nội dung

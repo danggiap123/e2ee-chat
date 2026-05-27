@@ -20,7 +20,7 @@ export async function generateIdentityKey() {
   await sodium.ready;
   const pair = sodium.crypto_sign_keypair();
   return {
-    IK_pub:    pair.publicKey,   // Uint8Array 32 bytes — Ed25519 public key
+    IK_pub: pair.publicKey,   // Uint8Array 32 bytes — Ed25519 public key
     IK_secret: pair.privateKey,  // Uint8Array 64 bytes — Ed25519 secret key (seed 32B + pub 32B)
     // Tên IK_secret: phân biệt rõ 2 dạng khóa bí mật của IK:
     //   IK_secret (64B Ed25519) → chỉ dùng để ký SPK, lưu IndexedDB
@@ -34,7 +34,7 @@ export async function generateSignedPreKey(IK_secret) {
   // IK_secret (64B Ed25519) ký lên SPK_pub → bất kỳ ai có IK_pub đều verify được
   const SPK_sig = sodium.crypto_sign_detached(pair.publicKey, IK_secret);
   return {
-    SPK_pub:  pair.publicKey,   // Uint8Array 32 bytes
+    SPK_pub: pair.publicKey,   // Uint8Array 32 bytes
     SPK_priv: pair.privateKey,  // Uint8Array 32 bytes
     SPK_sig,                    // Uint8Array 64 bytes (Ed25519 signature)
   };
@@ -45,8 +45,8 @@ export async function generateOneTimePreKeys(n = 100) {
   return Array.from({ length: n }, () => {
     const pair = sodium.crypto_box_keypair();
     return {
-      id:       crypto.randomUUID(), // string UUID — dùng để server + client đối chiếu
-      OPK_pub:  pair.publicKey,
+      id: crypto.randomUUID(), // string UUID — dùng để server + client đối chiếu
+      OPK_pub: pair.publicKey,
       OPK_priv: pair.privateKey,
     };
   });
@@ -55,11 +55,11 @@ export async function generateOneTimePreKeys(n = 100) {
 // ─── wrapping key (PBKDF2) ──────────────────────────────────────────────────
 
 export async function deriveWrappingKey(password, salt) {
-  // Bước 1: import password thô vào dạng Web Crypto hiểu được
+  // Bước 1: import password thô vào dạng Web Crypto hiểu được (CryptoKey object) để dùng cho PBKDF2
   const keyMaterial = await crypto.subtle.importKey(
     'raw',
     encode(password),
-    'PBKDF2',     // chỉ dùng để derive, không encrypt trực tiếp
+    'PBKDF2',     // thuật toán sẽ dùng keyMaterial này sau hàm này sẽ trở thành CryptoKey dùng cho PBKDF2
     false,        // không thể export ra ngoài
     ['deriveKey'] // chỉ dùng để tạo key mới
   );
@@ -67,10 +67,10 @@ export async function deriveWrappingKey(password, salt) {
   // Bước 2: derive AES-GCM key từ password + salt bằng PBKDF2
   return crypto.subtle.deriveKey(
     {
-      name:       'PBKDF2',
+      name: 'PBKDF2',
       salt,                     // Uint8Array 16 bytes — phải khác nhau mỗi user
       iterations: 600_000,      // 600k vòng — OWASP 2023 minimum cho PBKDF2-SHA256
-      hash:       'SHA-256',
+      hash: 'SHA-256',
     },
     keyMaterial,
     { name: 'AES-GCM', length: 256 }, // output là AES-256 key
@@ -90,19 +90,21 @@ export async function wrapPrivateKey(privKey, wrappingKey) {
   );
   return {
     wrapped: toBase64(wrapped), // string — an toàn để lưu IndexedDB
-    iv:      toBase64(iv),
+    iv: toBase64(iv),
   };
 }
 
 export async function unwrapPrivateKey(wrappedB64, ivB64, wrappingKey) {
-  const decrypted = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: fromBase64(ivB64) },
-    wrappingKey,
-    fromBase64(wrappedB64)
-  );
-  // Nếu wrappingKey sai (password sai) → decrypt throw DOMException
-  // → AuthContext.login() bắt lỗi này và throw 'Sai mật khẩu'
-  return new Uint8Array(decrypted);
+  try {
+    const decrypted = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: fromBase64(ivB64) },
+      wrappingKey,
+      fromBase64(wrappedB64)
+    );
+    return new Uint8Array(decrypted);
+  } catch {
+    throw new Error('Sai mật khẩu — không thể mở khóa private key');
+  }
 }
 
 // ─── re-export helpers (dùng ở nhiều nơi khác) ──────────────────────────────
