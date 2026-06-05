@@ -65,7 +65,7 @@ async function onConnect(ws, req) {
 
   // Bước 5: Gửi danh sách user đang online cho client mới vừa kết nối
   // Client dùng list này để hiển thị trạng thái ngay khi mở app
-  const onlineUsers = [...clients.keys()];
+  const onlineUsers = [...clients.keys()];// mảng userId đang online bằng cách lấy keys từ Map clients
   safeSend(ws, { type: 'connected', userId, onlineUsers });
 
   // Bước 6: Thông báo cho tất cả người khác rằng userId này vừa online

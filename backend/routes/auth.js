@@ -53,24 +53,30 @@ router.post('/register', registerLimiter, async (req, res) => {
       return res.status(409).json({ error: 'Email này đã được sử dụng để đăng ký tài khoản' });
     }
 
-    const existing = await prisma.user.findUnique({ where: { username } });
-    if (existing) {
+    const existingByUsername = await prisma.user.findUnique({ where: { username } });
+    if (existingByUsername) {
       return res.status(409).json({ error: 'Username đã tồn tại' });
+    }
+
+    const existingByEmail = await prisma.user.findUnique({ where: { email } });
+    if (existingByEmail) {
+      return res.status(409).json({ error: 'Email này đã được dùng để tạo tài khoản khác' });
     }
 
     const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
-    await prisma.$transaction(async (tx) => {
-      await tx.user.create({
+    const newUser = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
         data: { username, email, passwordHash: hash },
       });
       await tx.allowedEmail.update({
         where: { email },
         data: { usedAt: new Date() },
       });
+      return user;
     });
 
-    return res.status(201).json({ message: 'Đăng ký thành công, vui lòng đăng nhập' });
+    return res.status(201).json({ message: 'Đăng ký thành công, vui lòng đăng nhập', userId: newUser.id });
   } catch (err) {
     console.error('[POST /register]', err);
     return res.status(500).json({ error: 'Lỗi server khi đăng ký' });

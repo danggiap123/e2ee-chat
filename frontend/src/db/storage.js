@@ -23,16 +23,15 @@ db.version(1).stores({
  * @param {string}     userId      - UUID của user (từ server)
  * @param {Uint8Array} wrapSalt    - 16 bytes ngẫu nhiên dùng để derive wrappingKey (PBKDF2)
  * @param {CryptoKey}  wrappingKey - AES-GCM key đã derive từ password (PBKDF2), không lưu thẳng
- * @param {Uint8Array} IK_secret   - 64B Ed25519 secret key (seed 32B + pub 32B)
- * @param {Uint8Array} IK_pub      - 32B Ed25519 public key (cũng lưu để export/import)
+ * @param {Uint8Array} IK_secret   - 64B Ed25519 secret key (seed 32B + pub 32B); IK_pub = slice(32)
  * @param {Uint8Array} SPK_priv    - 32B X25519 private key của Signed PreKey
- * @param {Uint8Array[]} opkList   - mảng { id, OPK_priv } — 32B X25519 mỗi cái
+ * @param {Array<{id: string, OPK_priv: Uint8Array}>} opkList - mảng 100 OPK, mỗi phần tử gồm id (UUID) và OPK_priv (32B X25519)
  */
-export async function savePrivateKeys(userId, wrapSalt, wrappingKey, IK_secret, IK_pub, SPK_priv, opkList) {
+export async function savePrivateKeys(userId, wrapSalt, wrappingKey, IK_secret, SPK_priv, opkList) {
   // Wrap từng key riêng bằng AES-GCM — cùng wrappingKey, khác IV mỗi cái
   // Quan trọng: wrappingKey đã derive sẵn → PBKDF2 chỉ chạy 1 lần, không chạy lại ở đây
-  const { wrapped: wrappedIK,  iv: ivIK  } = await wrapPrivateKey(IK_secret, wrappingKey);
-  const { wrapped: wrappedIKPub, iv: ivIKPub } = await wrapPrivateKey(IK_pub, wrappingKey);
+  // IK_pub KHÔNG wrap riêng vì nó = IK_secret.slice(32) — recover khi load
+  const { wrapped: wrappedIK, iv: ivIK  } = await wrapPrivateKey(IK_secret, wrappingKey);
   const { wrapped: wrappedSPK, iv: ivSPK } = await wrapPrivateKey(SPK_priv, wrappingKey);
 
   // Wrap từng OPK — mỗi OPK có IV riêng ngẫu nhiên
@@ -46,11 +45,10 @@ export async function savePrivateKeys(userId, wrapSalt, wrappingKey, IK_secret, 
   // Lưu vào IndexedDB (upsert — put ghi đè nếu userId đã tồn tại)
   await db.privateKeys.put({
     userId,
-    wrapSalt:   toBase64(wrapSalt), // base64 string — IndexedDB không store Uint8Array tốt
-    wrappedIK,  ivIK,
-    wrappedIKPub, ivIKPub,
+    wrapSalt: toBase64(wrapSalt), // base64 string — IndexedDB không store Uint8Array tốt
+    wrappedIK, ivIK,
     wrappedSPK, ivSPK,
-    wrappedOPKs,                    // array of { id, wrapped, iv }
+    wrappedOPKs,                  // array of { id, wrapped, iv }
   });
 }
 
@@ -65,9 +63,9 @@ export async function loadPrivateKeys(userId, wrappingKey) {
   const record = await db.privateKeys.get(userId);
   if (!record) return null; // user chưa đăng ký trên thiết bị này
 
-  const IK_secret  = await unwrapPrivateKey(record.wrappedIK,    record.ivIK,    wrappingKey);
-  const IK_pub     = await unwrapPrivateKey(record.wrappedIKPub, record.ivIKPub, wrappingKey);
-  const SPK_priv   = await unwrapPrivateKey(record.wrappedSPK,   record.ivSPK,   wrappingKey);
+  const IK_secret = await unwrapPrivateKey(record.wrappedIK,  record.ivIK,  wrappingKey);
+  const IK_pub    = IK_secret.slice(32); // Ed25519 secret = seed(32B) + pub(32B)
+  const SPK_priv  = await unwrapPrivateKey(record.wrappedSPK, record.ivSPK, wrappingKey);
 
   // Build Map<id → OPK_priv> để lookup O(1) trong performX3DH_receiver
   const opkMap = new Map();
@@ -83,6 +81,17 @@ export async function loadPrivateKeys(userId, wrappingKey) {
     SPK_priv,
     opkMap,
   };
+}
+
+/**
+ * Trả wrapSalt (Uint8Array) để re-derive wrappingKey khi login/unlock.
+ * Gọi trước deriveWrappingKey() — cần salt trước khi có wrappingKey.
+ * @returns {Uint8Array|null}
+ */
+export async function getWrapSalt(userId) {
+  const record = await db.privateKeys.get(userId);
+  if (!record) return null;
+  return fromBase64(record.wrapSalt);
 }
 
 /** Trả true nếu user đã có private key trên thiết bị này */
