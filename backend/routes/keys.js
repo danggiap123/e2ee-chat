@@ -1,7 +1,9 @@
 const express = require('express');
 const router = express.Router();
+const WebSocket = require('ws');
 const { PrismaClient } = require('@prisma/client');
 const { requireAuth } = require('../middleware/auth');
+const { clients } = require('../ws/handler');
 
 const prisma = new PrismaClient();
 
@@ -30,6 +32,27 @@ router.post('/upload', requireAuth, async (req, res) => {
     await prisma.keyBundle.create({
       data: { userId: req.user.userId, ikPub, spkPub, spkSig, opkPubs },
     });
+
+    // Notify online peers: ikPub vừa available → họ tự cập nhật UI mà không cần reload
+    const convs = await prisma.conversation.findMany({
+      where: {
+        OR: [
+          { participantA: req.user.userId },
+          { participantB: req.user.userId },
+        ],
+      },
+      select: { participantA: true, participantB: true },
+    });
+
+    for (const conv of convs) {
+      const peerId = conv.participantA === req.user.userId
+        ? conv.participantB
+        : conv.participantA;
+      const peerSocket = clients.get(peerId);
+      if (peerSocket && peerSocket.readyState === WebSocket.OPEN) {
+        peerSocket.send(JSON.stringify({ type: 'key_uploaded', userId: req.user.userId, ikPub }));
+      }
+    }
 
     return res.status(201).json({ message: 'Upload key bundle thành công' });
   } catch (err) {

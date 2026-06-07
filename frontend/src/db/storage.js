@@ -101,6 +101,21 @@ export async function hasPrivateKeys(userId) {
 }
 
 /**
+ * Unwrap đúng 1 OPK theo id — dùng trong X3DH receiver thay vì loadPrivateKeys.
+ * Chỉ decrypt 1 AES-GCM thay vì 100 → nhanh hơn ~100×.
+ * @returns {Uint8Array|null} OPK_priv, hoặc null nếu không tìm thấy opkId
+ */
+export async function getOPK(userId, opkId, wrappingKey) {
+  const record = await db.privateKeys.get(userId);
+  if (!record) return null;
+
+  const found = record.wrappedOPKs.find(o => o.id === opkId);
+  if (!found) return null;
+
+  return unwrapPrivateKey(found.wrapped, found.iv, wrappingKey);
+}
+
+/**
  * Xóa 1 OPK đã dùng xong khỏi IndexedDB.
  * Gọi sau performX3DH_receiver — OPK dùng 1 lần, không được tái sử dụng.
  */

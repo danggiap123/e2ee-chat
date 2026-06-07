@@ -1,7 +1,11 @@
 const express = require('express');
 const router = express.Router();
+const WebSocket = require('ws');
 const { PrismaClient } = require('@prisma/client');
 const { requireAuth } = require('../middleware/auth');
+// clients = Map<userId, WebSocket> — in-memory registry từ ws/handler
+// Dùng require lazy (không circular) vì handler.js không require messages.js
+const { clients } = require('../ws/handler');
 
 const prisma = new PrismaClient();
 
@@ -43,6 +47,28 @@ router.post('/', requireAuth, async (req, res) => {
         ikPub: ikPub ?? null,
       },
     });
+
+    // Relay real-time cho receiver nếu đang online
+    const receiverId = conversation.participantA === req.user.userId
+      ? conversation.participantB
+      : conversation.participantA;
+
+    const receiverSocket = clients.get(receiverId);
+    if (receiverSocket && receiverSocket.readyState === WebSocket.OPEN) {
+      receiverSocket.send(JSON.stringify({
+        type: 'message',
+        msgId:  message.id,
+        conversationId,
+        senderId: req.user.userId,
+        ciphertext,
+        iv,
+        aad,
+        ...(ekPub  != null && { ekPub }),
+        ...(opkId  != null && { opkId }),
+        ...(ikPub  != null && { ikPub }),
+        createdAt: message.createdAt,
+      }));
+    }
 
     return res.status(201).json({
       messageId: message.id,
@@ -127,9 +153,25 @@ router.delete('/:messageId', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Bạn chỉ có thể xóa tin nhắn của chính mình' });
     }
 
-    await prisma.message.delete({
-      where: { id: messageId },
+    await prisma.message.delete({ where: { id: messageId } });
+
+    // Thông báo cho receiver đang online để họ xóa tin khỏi UI ngay lập tức
+    const conv = await prisma.conversation.findUnique({
+      where: { id: message.conversationId },
     });
+    if (conv) {
+      const receiverId = conv.participantA === req.user.userId
+        ? conv.participantB
+        : conv.participantA;
+      const receiverSocket = clients.get(receiverId);
+      if (receiverSocket && receiverSocket.readyState === WebSocket.OPEN) {
+        receiverSocket.send(JSON.stringify({
+          type: 'message_deleted',
+          messageId,
+          conversationId: message.conversationId,
+        }));
+      }
+    }
 
     return res.json({ message: 'Đã xóa tin nhắn' });
   } catch (err) {

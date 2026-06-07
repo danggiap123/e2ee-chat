@@ -55,11 +55,12 @@ async function onConnect(ws, req) {
     return;
   }
 
-  // Bước 4: Nếu user đã có socket cũ (mở tab mới), đóng socket cũ trước
-  // Tránh tình trạng 1 userId có 2 socket, dễ gây bug khi relay tin nhắn
+  // Bước 4: Nếu user đã có socket cũ (mở tab mới), thông báo rồi đóng socket cũ
+  // Gửi session_replaced trước để FE hiện overlay, rồi mới close
   const existing = clients.get(userId);
   if (existing && existing.readyState === WebSocket.OPEN) {
-    existing.close(4000, 'Replaced by new connection');
+    safeSend(existing, { type: 'session_replaced' });
+    existing.close(4009, 'Replaced by new connection');
   }
   clients.set(userId, ws);
 

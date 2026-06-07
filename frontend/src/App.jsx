@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext.jsx';
 import Login from './pages/Login.jsx';
 import Register from './pages/Register.jsx';
+import Chat from './pages/Chat.jsx';
 import UnlockModal from './components/UnlockModal.jsx';
 
 // ─── ProtectedRoute ───────────────────────────────────────────────────────────
@@ -33,28 +34,6 @@ function ProtectedRoute({ children }) {
   return children;
 }
 
-// ─── Placeholder Chat ─────────────────────────────────────────────────────────
-// Tạm thời để test routing — sẽ thay bằng Chat.jsx thật ở bước sau
-function ChatPlaceholder() {
-  const { username, logout } = useAuth();
-  return (
-    <div className="flex items-center justify-center h-screen bg-gray-50">
-      <div className="text-center space-y-4">
-        <p className="text-2xl font-semibold text-gray-700">
-          Xin chào, <span className="text-blue-600">{username}</span>!
-        </p>
-        <p className="text-gray-400 text-sm">Chat.jsx sẽ được xây dựng ở bước tiếp theo.</p>
-        <button
-          onClick={logout}
-          className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 text-sm"
-        >
-          Đăng xuất
-        </button>
-      </div>
-    </div>
-  );
-}
-
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   return (
@@ -72,7 +51,7 @@ export default function App() {
             path="/chat"
             element={
               <ProtectedRoute>
-                <ChatPlaceholder />
+                <Chat />
               </ProtectedRoute>
             }
           />

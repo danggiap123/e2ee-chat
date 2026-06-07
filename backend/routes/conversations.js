@@ -76,12 +76,22 @@ router.get('/', requireAuth, async (req, res) => {
         id: true,
         fingerprintVerified: true,
         createdAt: true,
-        userA: { select: { id: true, username: true } },
-        userB: { select: { id: true, username: true } },
+        userA: {
+          select: {
+            id: true, username: true,
+            keyBundle: { select: { ikPub: true } },
+          },
+        },
+        userB: {
+          select: {
+            id: true, username: true,
+            keyBundle: { select: { ikPub: true } },
+          },
+        },
         messages: {
           orderBy: { createdAt: 'desc' },
-          take: 1,                          // chỉ lấy tin nhắn mới nhất
-          select: { createdAt: true },      // chỉ cần timestamp để sắp xếp sidebar
+          take: 1,
+          select: { createdAt: true },
         },
       },
     });
@@ -89,11 +99,15 @@ router.get('/', requireAuth, async (req, res) => {
     // Định dạng lại: trả về thông tin người kia
     const result = conversations.map((conv) => {
       const isA = conv.userA.id === req.user.userId;
-      const peer = isA ? conv.userB : conv.userA; // người kia trong conversation
+      const peer = isA ? conv.userB : conv.userA;
 
       return {
         conversationId: conv.id,
-        peer: { id: peer.id, username: peer.username },
+        peer: {
+          id: peer.id,
+          username: peer.username,
+          ikPub: peer.keyBundle?.ikPub ?? null, // Ed25519 public key — dùng để tính fingerprint
+        },
         fingerprintVerified: conv.fingerprintVerified,
         lastMessageAt: conv.messages[0]?.createdAt ?? conv.createdAt,
       };
