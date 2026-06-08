@@ -1,21 +1,70 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 
 // onSend         : (text: string) => Promise<void>
+// onSendFile     : (file: File) => Promise<void>
 // isSending      : boolean
 // disabled       : boolean — khi fingerprint chưa verify
 // replyTo        : { id, senderUsername, preview } | null — tin đang được trả lời
 // onCancelReply  : () => void — xóa trạng thái reply
-export default function MessageInput({ onSend, isSending, disabled, replyTo, onCancelReply }) {
+export default function MessageInput({ onSend, onSendFile, isSending, disabled, replyTo, onCancelReply }) {
   const [text, setText] = useState('');
+  const [fileError, setFileError] = useState('');
   const textareaRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const prevIsSendingRef = useRef(isSending);
+
+  // Khi isSending chuyển true → false (gửi xong) → focus lại textarea
+  useEffect(() => {
+    if (prevIsSendingRef.current && !isSending && !disabled) {
+      textareaRef.current?.focus();
+    }
+    prevIsSendingRef.current = isSending;
+  }, [isSending, disabled]);
 
   async function handleSend() {
     const trimmed = text.trim();
     if (!trimmed || isSending || disabled) return;
     setText('');
-    // Reset chiều cao textarea về 1 dòng sau khi gửi
-    if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.focus();
+    }
     await onSend(trimmed);
+  }
+
+  // Ctrl+V paste ảnh từ clipboard → gửi ngay như file ảnh
+  // Nếu clipboard chứa text thuần → paste bình thường vào textarea (không chặn)
+  function handlePaste(e) {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    for (const item of items) {
+      if (item.kind === 'file') {
+        const file = item.getAsFile();
+        if (!file) continue;
+        e.preventDefault(); // chặn paste text/binary vào textarea
+        if (file.size > 10 * 1024 * 1024) {
+          setFileError('Ảnh quá lớn — tối đa 10MB');
+          return;
+        }
+        setFileError('');
+        onSendFile?.(file);
+        return;
+      }
+    }
+    // Không có file trong clipboard → paste text bình thường, không làm gì thêm
+  }
+
+  function handleFileChange(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = ''; // reset để có thể chọn lại cùng file
+    if (file.size > 10 * 1024 * 1024) {
+      setFileError('File quá lớn — tối đa 10MB');
+      return;
+    }
+    setFileError('');
+    onSendFile?.(file);
   }
 
   // Enter → gửi, Shift+Enter → xuống dòng
@@ -62,12 +111,36 @@ export default function MessageInput({ onSend, isSending, disabled, replyTo, onC
           Xác minh danh tính trước khi nhắn tin để đảm bảo bảo mật
         </p>
       )}
+      {fileError && (
+        <p className="text-xs text-red-500 mb-2 text-center">{fileError}</p>
+      )}
       <div className="flex items-end gap-2">
+        {/* Nút đính kèm file/ảnh */}
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={disabled || isSending}
+          title="Gửi file hoặc ảnh (tối đa 10MB)"
+          className="shrink-0 w-10 h-10 rounded-full bg-gray-100 text-gray-500 flex items-center justify-center
+            hover:bg-gray-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+          </svg>
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          className="hidden"
+          onChange={handleFileChange}
+        />
         <textarea
           ref={textareaRef}
           value={text}
           onInput={handleInput}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           disabled={disabled || isSending}
           placeholder={disabled ? 'Cần xác minh danh tính trước...' : 'Nhắn tin... (Enter để gửi)'}
           rows={1}

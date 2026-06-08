@@ -5,8 +5,8 @@ import { useMessages } from '../hooks/useMessages.js';
 import * as api from '../services/api.js';
 import * as storage from '../db/storage.js';
 import { performX3DH_sender } from '../crypto/x3dh.js';
-import { encryptMessage } from '../crypto/aesGcm.js';
-import { toBase64, fromBase64 } from '../crypto/keyGen.js';
+import { encryptMessage, encryptBytes, encryptBytesWithRandomKey, decryptBytes, decryptBytesWithKey } from '../crypto/aesGcm.js';
+import { toBase64 } from '../crypto/keyGen.js';
 import ChatSidebar from '../components/ChatSidebar.jsx';
 import MessageList from '../components/MessageList.jsx';
 import MessageInput from '../components/MessageInput.jsx';
@@ -16,51 +16,67 @@ import ConfirmModal from '../components/ConfirmModal.jsx';
 export default function Chat() {
   const { token, userId, username, IK_secret, IK_pub, wrappingKey, logout } = useAuth();
 
-  // ─── Danh sách conversations ──────────────────────────────────────────────────
-  const [conversations,  setConversations]  = useState([]);
-  const [activeConvId,   setActiveConvId]   = useState(null);
-  const [activePeer,     setActivePeer]     = useState(null); // { id, username, ikPub }
-  const [isVerified,     setIsVerified]     = useState(false);
+  // ─── State 1-1 ───────────────────────────────────────────────────────────────
+  const [conversations,   setConversations]   = useState([]);
+  const [activeConvId,    setActiveConvId]    = useState(null);
+  const [activePeer,      setActivePeer]      = useState(null);
+  const [isVerified,      setIsVerified]      = useState(false);
   const [showFingerprint, setShowFingerprint] = useState(false);
-  const [isSending,      setIsSending]      = useState(false);
-  const [sendError,      setSendError]      = useState('');
-  const [replyTo,        setReplyTo]        = useState(null); // { id, senderUsername, preview }
-  const [unreadCounts,   setUnreadCounts]   = useState(new Map()); // Map<convId, number>
-  // confirmModal: { type: 'deleteMessage'|'deleteConv', id } — null khi không hiện
-  const [confirmModal,   setConfirmModal]   = useState(null);
+  const [unreadCounts,    setUnreadCounts]    = useState(new Map());
+
+  // ─── State group ──────────────────────────────────────────────────────────────
+  const [groups,           setGroups]           = useState([]);
+  const [activeGroupId,    setActiveGroupId]    = useState(null);
+  const [activeGroup,      setActiveGroup]      = useState(null); // { groupId, name, members, ... }
+  const [unreadGroupCounts, setUnreadGroupCounts] = useState(new Map());
+
+  // ─── State chung ─────────────────────────────────────────────────────────────
+  const [isSending,    setIsSending]    = useState(false);
+  const [sendError,    setSendError]    = useState('');
+  const [replyTo,      setReplyTo]      = useState(null);
+  const [confirmModal, setConfirmModal] = useState(null);
 
   // ─── Hooks ───────────────────────────────────────────────────────────────────
-  const { onlineUsers, isConnected, isSessionReplaced, onNewMessage, onKeyUploaded, onMessageDeleted, reconnect, sessionKeysRef } = useWebSocket();
-  const { messages, isLoading, hasMore, loadMore, addMessage, removeMessage } = useMessages(activeConvId, sessionKeysRef);
+  const {
+    onlineUsers, isConnected, isSessionReplaced,
+    onNewMessage, onNewGroupMessage, onKeyUploaded, onMessageDeleted,
+    reconnect, sessionKeysRef,
+  } = useWebSocket();
 
-  // ─── Load danh sách conversations khi vào trang ──────────────────────────────
+  const { messages, isLoading, hasMore, loadMore, addMessage, removeMessage } =
+    useMessages(activeConvId, sessionKeysRef, activeGroupId);
+
+  // ─── Load dữ liệu khi vào trang ──────────────────────────────────────────────
   useEffect(() => {
     if (!token) return;
     api.listConversations(token)
       .then(({ conversations: list }) => setConversations(list))
       .catch(err => console.error('[Chat] listConversations:', err));
+    api.listGroups(token)
+      .then(({ groups: list }) => setGroups(list))
+      .catch(err => console.error('[Chat] listGroups:', err));
   }, [token]);
 
-  // ─── Đăng ký callback nhận tin real-time ─────────────────────────────────────
-  // Dùng ref để callback không bị stale dù onNewMessage chỉ đăng ký 1 lần
-  const activeConvIdRef  = useRef(activeConvId);
-  const addMessageRef    = useRef(addMessage);
-  const removeMessageRef = useRef(removeMessage);
+  // ─── Refs chống stale closure ─────────────────────────────────────────────────
+  const activeConvIdRef   = useRef(activeConvId);
+  const activeGroupIdRef  = useRef(activeGroupId);
+  const addMessageRef     = useRef(addMessage);
+  const removeMessageRef  = useRef(removeMessage);
   useEffect(() => { activeConvIdRef.current  = activeConvId;  }, [activeConvId]);
+  useEffect(() => { activeGroupIdRef.current = activeGroupId; }, [activeGroupId]);
   useEffect(() => { addMessageRef.current    = addMessage;    }, [addMessage]);
   useEffect(() => { removeMessageRef.current = removeMessage; }, [removeMessage]);
 
-  // Peer vừa upload key → cập nhật ikPub trong conversations + activePeer (không cần reload)
+  // ─── Callbacks WebSocket ──────────────────────────────────────────────────────
   useEffect(() => {
-    onKeyUploaded(({ userId, ikPub }) => {
+    onKeyUploaded(({ userId: uid, ikPub }) => {
       setConversations(prev =>
-        prev.map(c => c.peer.id === userId ? { ...c, peer: { ...c.peer, ikPub } } : c)
+        prev.map(c => c.peer.id === uid ? { ...c, peer: { ...c.peer, ikPub } } : c)
       );
-      setActivePeer(prev => prev?.id === userId ? { ...prev, ikPub } : prev);
+      setActivePeer(prev => prev?.id === uid ? { ...prev, ikPub } : prev);
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Peer xóa tin nhắn → xóa khỏi UI nếu đang xem conversation đó
   useEffect(() => {
     onMessageDeleted(({ messageId, conversationId }) => {
       if (conversationId === activeConvIdRef.current) {
@@ -69,20 +85,18 @@ export default function Chat() {
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Tin 1-1 đến real-time
   useEffect(() => {
     onNewMessage(({ conversationId, message }) => {
-      // Nếu đang xem đúng conversation đó → thêm tin vào danh sách
       if (conversationId === activeConvIdRef.current) {
         addMessageRef.current?.(message);
       } else {
-        // Conversation không active → tăng unread badge
         setUnreadCounts(prev => {
           const m = new Map(prev);
           m.set(conversationId, (m.get(conversationId) ?? 0) + 1);
           return m;
         });
       }
-      // Luôn bump conversation lên đầu sidebar khi có tin mới
       setConversations(prev => {
         const idx = prev.findIndex(c => c.conversationId === conversationId);
         if (idx === -1) return prev;
@@ -92,147 +106,127 @@ export default function Chat() {
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ─── Conversation vừa tạo mới qua search → reload để lấy peer.ikPub ─────────
-  // Nếu không reload: object tạm có ikPub=null → FingerprintModal không mở được
-  async function handleConvCreated(conversationId, peerId) {
-    try {
-      const { conversations: fresh } = await api.listConversations(token);
-      setConversations(fresh);
-      const conv = fresh.find(c => c.conversationId === conversationId);
-      if (conv) {
-        handleSelectConv(conv);
+  // Tin group đến real-time
+  useEffect(() => {
+    onNewGroupMessage(({ groupId, message }) => {
+      if (groupId === activeGroupIdRef.current) {
+        addMessageRef.current?.(message);
+      } else {
+        setUnreadGroupCounts(prev => {
+          const m = new Map(prev);
+          m.set(groupId, (m.get(groupId) ?? 0) + 1);
+          return m;
+        });
       }
-    } catch (err) {
-      console.error('[Chat] handleConvCreated reload error:', err);
-    }
-  }
+      setGroups(prev => {
+        const idx = prev.findIndex(g => g.groupId === groupId);
+        if (idx === -1) return prev;
+        const updated = { ...prev[idx], lastMessageAt: message.createdAt };
+        return [updated, ...prev.slice(0, idx), ...prev.slice(idx + 1)];
+      });
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ─── Chọn conversation ────────────────────────────────────────────────────────
+  // ─── Chọn conversation 1-1 ───────────────────────────────────────────────────
   function handleSelectConv(conv) {
     setActiveConvId(conv.conversationId);
     setActivePeer(conv.peer);
     setIsVerified(conv.fingerprintVerified);
+    setActiveGroupId(null);
+    setActiveGroup(null);
     setSendError('');
     setReplyTo(null);
-
-    // Clear unread badge khi mở conversation
     setUnreadCounts(prev => {
       if (!prev.has(conv.conversationId)) return prev;
-      const m = new Map(prev);
-      m.delete(conv.conversationId);
-      return m;
+      const m = new Map(prev); m.delete(conv.conversationId); return m;
     });
-
-    // Nếu conversation mới tạo (qua search) chưa có trong danh sách → thêm vào
     setConversations(prev => {
       if (prev.find(c => c.conversationId === conv.conversationId)) return prev;
       return [conv, ...prev];
     });
   }
 
-  // ─── Lấy hoặc tạo Session Key ─────────────────────────────────────────────────
-  // Trả về { SK, ekPub?, opkId?, ikPub? }
-  // ekPub/opkId/ikPub chỉ có khi SK mới được tạo qua X3DH sender (tin đầu tiên)
+  async function handleConvCreated(conversationId, peerId) {
+    try {
+      const { conversations: fresh } = await api.listConversations(token);
+      setConversations(fresh);
+      const conv = fresh.find(c => c.conversationId === conversationId);
+      if (conv) handleSelectConv(conv);
+    } catch (err) {
+      console.error('[Chat] handleConvCreated:', err);
+    }
+  }
+
+  // ─── Chọn group ───────────────────────────────────────────────────────────────
+  function handleSelectGroup(group) {
+    setActiveGroupId(group.groupId);
+    setActiveGroup(group);
+    setActiveConvId(null);
+    setActivePeer(null);
+    setSendError('');
+    setReplyTo(null);
+    setUnreadGroupCounts(prev => {
+      if (!prev.has(group.groupId)) return prev;
+      const m = new Map(prev); m.delete(group.groupId); return m;
+    });
+  }
+
+  function handleGroupCreated(group) {
+    setGroups(prev => [group, ...prev]);
+    handleSelectGroup(group);
+  }
+
+  // ─── Lấy hoặc tạo SK cho 1-1 ─────────────────────────────────────────────────
   async function getOrCreateSK(conversationId, peerId) {
-    // Bước 1: kiểm tra RAM cache từ useWebSocket
     const cached = sessionKeysRef.current.get(conversationId);
     if (cached) return { SK: cached };
-
-    // Bước 2: kiểm tra IndexedDB
     const stored = await storage.loadSession(conversationId, wrappingKey);
-    if (stored) {
-      sessionKeysRef.current.set(conversationId, stored);
-      return { SK: stored };
-    }
+    if (stored) { sessionKeysRef.current.set(conversationId, stored); return { SK: stored }; }
 
-    // Bước 3: chưa có SK → X3DH sender
-    // Fetch key bundle của Bob — server tự pop 1 OPK khỏi pool
     const bundle = await api.fetchKeyBundle(token, peerId);
-
     const { SK, EK_pub, OPK_id, IK_pub: myIKPub } = await performX3DH_sender(
-      { IK_secret, IK_pub },
-      bundle
+      { IK_secret, IK_pub }, bundle
     );
-
-    // Lưu SK vào IndexedDB + RAM cache
     await storage.saveSession(conversationId, SK, wrappingKey);
     sessionKeysRef.current.set(conversationId, SK);
-
-    return {
-      SK,
-      ekPub: toBase64(EK_pub),
-      opkId: OPK_id,
-      ikPub: toBase64(myIKPub),
-    };
+    return { SK, ekPub: toBase64(EK_pub), opkId: OPK_id, ikPub: toBase64(myIKPub) };
   }
 
-  // ─── Xóa tin nhắn — mở modal confirm, thực hiện sau khi user xác nhận ────────
-  function handleDeleteMessage(msgId) {
-    setConfirmModal({ type: 'deleteMessage', id: msgId });
+  // ─── Lấy hoặc tạo SK cho group (per recipient) ───────────────────────────────
+  // cacheKey = `${groupId}:${recipientId}` — tách biệt với SK 1-1
+  async function getOrCreateGroupSK(groupId, recipientId) {
+    const cacheKey = `${groupId}:${recipientId}`;
+    const cached = sessionKeysRef.current.get(cacheKey);
+    if (cached) return { SK: cached };
+    const stored = await storage.loadSession(cacheKey, wrappingKey);
+    if (stored) { sessionKeysRef.current.set(cacheKey, stored); return { SK: stored }; }
+
+    const bundle = await api.fetchKeyBundle(token, recipientId);
+    const { SK, EK_pub, OPK_id, IK_pub: myIKPub } = await performX3DH_sender(
+      { IK_secret, IK_pub }, bundle
+    );
+    await storage.saveSession(cacheKey, SK, wrappingKey);
+    sessionKeysRef.current.set(cacheKey, SK);
+    return { SK, ekPub: toBase64(EK_pub), opkId: OPK_id, ikPub: toBase64(myIKPub) };
   }
 
-  async function doDeleteMessage(msgId) {
-    setConfirmModal(null);
-    try {
-      await api.deleteMessage(token, msgId);
-      removeMessage(msgId);
-    } catch (err) {
-      console.error('[Chat] deleteMessage error:', err);
-    }
-  }
-
-  // ─── Xóa conversation — mở modal confirm, thực hiện sau khi user xác nhận ───
-  function handleDeleteConv(convId) {
-    setConfirmModal({ type: 'deleteConv', id: convId });
-  }
-
-  async function doDeleteConv(convId) {
-    setConfirmModal(null);
-    try {
-      await api.deleteConversation(token, convId);
-      setConversations(prev => prev.filter(c => c.conversationId !== convId));
-      // Nếu đang xem conversation bị xóa → về màn hình chờ
-      if (activeConvId === convId) {
-        setActiveConvId(null);
-        setActivePeer(null);
-        setIsVerified(false);
-        setReplyTo(null);
-      }
-    } catch (err) {
-      console.error('[Chat] deleteConversation error:', err);
-    }
-  }
-
-  // ─── Gửi tin nhắn ────────────────────────────────────────────────────────────
+  // ─── Gửi tin 1-1 ─────────────────────────────────────────────────────────────
   async function handleSend(text) {
     if (!activeConvId || !activePeer || isSending) return;
     setSendError('');
     setIsSending(true);
-
-    // Nếu đang reply → wrap plaintext thành JSON để lưu thông tin trả lời
-    // Format: { t: nội dung, r: { id: msgId gốc, u: tên người gửi gốc, p: preview 100 ký tự đầu } }
     const currentReply = replyTo;
     const payload = currentReply
       ? JSON.stringify({ t: text, r: { id: currentReply.id, u: currentReply.senderUsername, p: currentReply.preview.slice(0, 100) } })
       : text;
-
-    setReplyTo(null); // Clear reply state ngay lập tức (UX tốt hơn)
-
+    setReplyTo(null);
     try {
       const { SK, ekPub, opkId, ikPub } = await getOrCreateSK(activeConvId, activePeer.id);
       const { ciphertext, iv, aad } = await encryptMessage(payload, SK, activeConvId, userId);
-
       const { messageId, createdAt } = await api.sendMessage(token, {
-        conversationId: activeConvId,
-        ciphertext, iv, aad,
-        // 3 trường này chỉ có ở tin X3DH đầu tiên — tin thường là undefined → server lưu null
-        ekPub, opkId, ikPub,
+        conversationId: activeConvId, ciphertext, iv, aad, ekPub, opkId, ikPub,
       });
-
-      // Thêm tin vào UI ngay (optimistic) — WS ACK sẽ đến sau và bị dedup theo messageId
       addMessage({ id: messageId, senderId: userId, plaintext: payload, createdAt, isDecryptError: false });
-
-      // Bump conversation lên đầu sidebar
       setConversations(prev => {
         const idx = prev.findIndex(c => c.conversationId === activeConvId);
         if (idx === -1) return prev;
@@ -247,31 +241,218 @@ export default function Chat() {
     }
   }
 
-  // ─── Verify fingerprint xong ─────────────────────────────────────────────────
+  // ─── Gửi tin group ────────────────────────────────────────────────────────────
+  // Encrypt N lần — mỗi thành viên nhận 1 bản mã riêng
+  async function handleSendGroup(text) {
+    if (!activeGroupId || !activeGroup || isSending) return;
+    setSendError('');
+    setIsSending(true);
+    try {
+      const otherMembers = activeGroup.members.filter(m => m.id !== userId);
+      if (otherMembers.length === 0) {
+        setSendError('Nhóm không có thành viên nào khác');
+        return;
+      }
+
+      // Encrypt song song cho tất cả thành viên
+      const recipients = await Promise.all(otherMembers.map(async (member) => {
+        const { SK, ekPub, opkId, ikPub } = await getOrCreateGroupSK(activeGroupId, member.id);
+        // AAD = `${groupId}:${senderId}` — dùng groupId thay conversationId
+        const { ciphertext, iv, aad } = await encryptMessage(text, SK, activeGroupId, userId);
+        return { userId: member.id, ciphertext, iv, aad, ekPub, opkId, ikPub };
+      }));
+
+      const { createdAt } = await api.sendGroupMessage(token, {
+        groupId: activeGroupId, recipients,
+      });
+
+      // Thêm tin vào UI ngay (optimistic)
+      const tempId = `temp-${Date.now()}`;
+      addMessage({ id: tempId, senderId: userId, plaintext: text, createdAt, isDecryptError: false });
+
+      setGroups(prev => {
+        const idx = prev.findIndex(g => g.groupId === activeGroupId);
+        if (idx === -1) return prev;
+        const updated = { ...prev[idx], lastMessageAt: createdAt };
+        return [updated, ...prev.slice(0, idx), ...prev.slice(idx + 1)];
+      });
+    } catch (err) {
+      console.error('[Chat] handleSendGroup error:', err);
+      setSendError('Không thể gửi tin nhóm: ' + err.message);
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  // ─── Gửi file/ảnh 1-1 ────────────────────────────────────────────────────────
+  // File được mã hóa bằng SK của conversation → upload lên server → gửi message chứa metadata
+  async function handleSendFile(file) {
+    if (!activeConvId || !activePeer || isSending) return;
+    setSendError('');
+    setIsSending(true);
+    try {
+      const { SK, ekPub, opkId, ikPub } = await getOrCreateSK(activeConvId, activePeer.id);
+
+      const { encryptedBytes, fileIv } = await encryptBytes(
+        new Uint8Array(await file.arrayBuffer()), SK
+      );
+      const { fileId } = await api.uploadFile(token, encryptedBytes);
+
+      const type = file.type.startsWith('image/') ? 'image' : 'file';
+      // fileKey không có — receiver dùng SK của conversation để decrypt
+      const filePayload = JSON.stringify({
+        type, fileId, fileName: file.name, mimeType: file.type, fileSize: file.size, fileIv,
+      });
+
+      const { ciphertext, iv, aad } = await encryptMessage(filePayload, SK, activeConvId, userId);
+      const { messageId, createdAt } = await api.sendMessage(token, {
+        conversationId: activeConvId, ciphertext, iv, aad, ekPub, opkId, ikPub,
+      });
+
+      addMessage({ id: messageId, senderId: userId, plaintext: filePayload, createdAt, isDecryptError: false });
+      setConversations(prev => {
+        const idx = prev.findIndex(c => c.conversationId === activeConvId);
+        if (idx === -1) return prev;
+        const updated = { ...prev[idx], lastMessageAt: createdAt };
+        return [updated, ...prev.slice(0, idx), ...prev.slice(idx + 1)];
+      });
+    } catch (err) {
+      console.error('[Chat] handleSendFile:', err);
+      setSendError('Không thể gửi file: ' + err.message);
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  // ─── Gửi file/ảnh group ───────────────────────────────────────────────────────
+  // Upload 1 bản mã duy nhất (dùng random fileKey), gửi fileKey trong message payload của từng người
+  async function handleSendGroupFile(file) {
+    if (!activeGroupId || !activeGroup || isSending) return;
+    setSendError('');
+    setIsSending(true);
+    try {
+      const otherMembers = activeGroup.members.filter(m => m.id !== userId);
+      if (otherMembers.length === 0) {
+        setSendError('Nhóm không có thành viên nào khác');
+        return;
+      }
+
+      const { encryptedBytes, fileIv, fileKey } = await encryptBytesWithRandomKey(
+        new Uint8Array(await file.arrayBuffer())
+      );
+      const { fileId } = await api.uploadFile(token, encryptedBytes);
+
+      const type = file.type.startsWith('image/') ? 'image' : 'file';
+      const recipients = await Promise.all(otherMembers.map(async (member) => {
+        const { SK, ekPub, opkId, ikPub } = await getOrCreateGroupSK(activeGroupId, member.id);
+        // fileKey được bọc trong message payload → mã hóa bằng SK của từng người
+        const filePayload = JSON.stringify({
+          type, fileId, fileName: file.name, mimeType: file.type, fileSize: file.size, fileIv, fileKey,
+        });
+        const { ciphertext, iv, aad } = await encryptMessage(filePayload, SK, activeGroupId, userId);
+        return { userId: member.id, ciphertext, iv, aad, ekPub, opkId, ikPub };
+      }));
+
+      const { createdAt } = await api.sendGroupMessage(token, { groupId: activeGroupId, recipients });
+
+      const tempId = `temp-${Date.now()}`;
+      const displayPayload = JSON.stringify({
+        type, fileId, fileName: file.name, mimeType: file.type, fileSize: file.size, fileIv, fileKey,
+      });
+      addMessage({ id: tempId, senderId: userId, plaintext: displayPayload, createdAt, isDecryptError: false });
+
+      setGroups(prev => {
+        const idx = prev.findIndex(g => g.groupId === activeGroupId);
+        if (idx === -1) return prev;
+        const updated = { ...prev[idx], lastMessageAt: createdAt };
+        return [updated, ...prev.slice(0, idx), ...prev.slice(idx + 1)];
+      });
+    } catch (err) {
+      console.error('[Chat] handleSendGroupFile:', err);
+      setSendError('Không thể gửi file nhóm: ' + err.message);
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  // ─── Download + giải mã file ──────────────────────────────────────────────────
+  // fileInfo: { type, fileId, fileName, mimeType, fileSize, fileIv, fileKey? }
+  // senderId: dùng để tìm SK đúng trong group (cacheKey = groupId:senderId)
+  // Return: Blob URL (caller tạo link download hoặc dùng làm img src)
+  async function handleDownloadFile(fileInfo, senderId) {
+    const { fileId, fileIv, fileKey, mimeType, fileName } = fileInfo;
+    const encryptedBytes = await api.downloadFile(token, fileId);
+
+    let decryptedBytes;
+    if (fileKey) {
+      // Group: dùng fileKey random nằm trong message payload
+      decryptedBytes = await decryptBytesWithKey(encryptedBytes, fileIv, fileKey);
+    } else {
+      // 1-1: dùng SK của conversation
+      let SK = sessionKeysRef.current.get(activeConvId);
+      if (!SK) {
+        SK = await storage.loadSession(activeConvId, wrappingKey);
+        if (SK) sessionKeysRef.current.set(activeConvId, SK);
+      }
+      if (!SK) throw new Error('Session key không tồn tại');
+      decryptedBytes = await decryptBytes(encryptedBytes, fileIv, SK);
+    }
+
+    if (!decryptedBytes) throw new Error('Giải mã file thất bại');
+
+    const blob = new Blob([decryptedBytes], { type: mimeType || 'application/octet-stream' });
+    return URL.createObjectURL(blob);
+  }
+
+  // ─── Xóa tin nhắn / conversation ─────────────────────────────────────────────
+  function handleDeleteMessage(msgId) { setConfirmModal({ type: 'deleteMessage', id: msgId }); }
+
+  async function doDeleteMessage(msgId) {
+    setConfirmModal(null);
+    try {
+      await api.deleteMessage(token, msgId);
+      removeMessage(msgId);
+    } catch (err) { console.error('[Chat] deleteMessage:', err); }
+  }
+
+  function handleDeleteConv(convId) { setConfirmModal({ type: 'deleteConv', id: convId }); }
+
+  async function doDeleteConv(convId) {
+    setConfirmModal(null);
+    try {
+      await api.deleteConversation(token, convId);
+      setConversations(prev => prev.filter(c => c.conversationId !== convId));
+      if (activeConvId === convId) {
+        setActiveConvId(null); setActivePeer(null); setIsVerified(false); setReplyTo(null);
+      }
+    } catch (err) { console.error('[Chat] deleteConversation:', err); }
+  }
+
   function handleVerified() {
     setIsVerified(true);
     setShowFingerprint(false);
-    // Cập nhật conversation trong danh sách
     setConversations(prev =>
-      prev.map(c =>
-        c.conversationId === activeConvId
-          ? { ...c, fingerprintVerified: true }
-          : c
-      )
+      prev.map(c => c.conversationId === activeConvId ? { ...c, fingerprintVerified: true } : c)
     );
   }
 
-  // ─── Map<userId, peer> để MessageList hiển thị tên ───────────────────────────
+  // ─── peersMap cho MessageList hiển thị tên sender ────────────────────────────
   const peersMap = useMemo(() => {
     const m = new Map();
-    if (activePeer) m.set(activePeer.id, activePeer);
+    if (activeGroupId && activeGroup) {
+      activeGroup.members.forEach(member => m.set(member.id, { id: member.id, username: member.username }));
+    } else if (activePeer) {
+      m.set(activePeer.id, activePeer);
+    }
     return m;
-  }, [activePeer]);
+  }, [activePeer, activeGroup, activeGroupId]);
+
+  const isGroupActive = !!activeGroupId && !!activeGroup;
+  const isDirectActive = !!activeConvId && !!activePeer;
 
   // ─── Render ───────────────────────────────────────────────────────────────────
   return (
     <div className="flex h-screen bg-gray-100 overflow-hidden">
-      {/* Sidebar trái */}
       <ChatSidebar
         conversations={conversations}
         activeConvId={activeConvId}
@@ -280,6 +461,11 @@ export default function Chat() {
         onConvCreated={handleConvCreated}
         onDeleteConv={handleDeleteConv}
         unreadCounts={unreadCounts}
+        groups={groups}
+        activeGroupId={activeGroupId}
+        onSelectGroup={handleSelectGroup}
+        onGroupCreated={handleGroupCreated}
+        unreadGroupCounts={unreadGroupCounts}
         username={username}
         userId={userId}
         token={token}
@@ -287,16 +473,15 @@ export default function Chat() {
         onLogout={logout}
       />
 
-      {/* Khu vực chat phải */}
       <div className="flex-1 flex flex-col min-w-0">
-        {activeConvId && activePeer ? (
+        {/* ── Chat 1-1 ── */}
+        {isDirectActive && (
           <>
-            {/* Header conversation */}
             <div className="bg-white border-b border-gray-200 px-5 py-3 flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="relative">
                   <div className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-semibold"
-                    style={{ backgroundColor: `hsl(${[...activePeer.id].reduce((a, c) => a + c.charCodeAt(0), 0) % 360}, 55%, 42%)` }}>
+                    style={{ backgroundColor: `hsl(${[...activePeer.id].reduce((a,c) => a + c.charCodeAt(0), 0) % 360}, 55%, 42%)` }}>
                     {activePeer.username.slice(0, 2).toUpperCase()}
                   </div>
                   {onlineUsers.has(activePeer.id) && (
@@ -310,9 +495,7 @@ export default function Chat() {
                   </p>
                 </div>
               </div>
-
               <div className="flex items-center gap-2">
-                {/* Badge bảo mật */}
                 {isVerified ? (
                   <span className="text-xs bg-green-50 text-green-700 border border-green-200 rounded-full px-3 py-1 flex items-center gap-1">
                     <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
@@ -321,17 +504,14 @@ export default function Chat() {
                     E2EE · Đã xác minh
                   </span>
                 ) : (
-                  <button
-                    onClick={() => setShowFingerprint(true)}
-                    className="text-xs bg-amber-50 text-amber-700 border border-amber-200 rounded-full px-3 py-1 hover:bg-amber-100 transition-colors"
-                  >
+                  <button onClick={() => setShowFingerprint(true)}
+                    className="text-xs bg-amber-50 text-amber-700 border border-amber-200 rounded-full px-3 py-1 hover:bg-amber-100 transition-colors">
                     Xác minh danh tính
                   </button>
                 )}
               </div>
             </div>
 
-            {/* Banner lỗi gửi tin */}
             {sendError && (
               <div className="bg-red-50 text-red-600 text-xs text-center py-2 px-4 border-b border-red-100">
                 {sendError}
@@ -339,30 +519,60 @@ export default function Chat() {
               </div>
             )}
 
-            {/* Danh sách tin nhắn */}
             <MessageList
-              messages={messages}
-              userId={userId}
-              myUsername={username}
-              isLoading={isLoading}
-              hasMore={hasMore}
-              onLoadMore={loadMore}
-              peers={peersMap}
-              onDeleteMessage={handleDeleteMessage}
-              onReply={setReplyTo}
+              messages={messages} userId={userId} myUsername={username}
+              isLoading={isLoading} hasMore={hasMore} onLoadMore={loadMore}
+              peers={peersMap} onDeleteMessage={handleDeleteMessage} onReply={setReplyTo}
+              onDownloadFile={handleDownloadFile}
             />
-
-            {/* Ô nhập tin */}
             <MessageInput
-              onSend={handleSend}
-              isSending={isSending}
-              disabled={!isVerified}
-              replyTo={replyTo}
-              onCancelReply={() => setReplyTo(null)}
+              onSend={handleSend} onSendFile={handleSendFile} isSending={isSending}
+              disabled={!isVerified} replyTo={replyTo} onCancelReply={() => setReplyTo(null)}
             />
           </>
-        ) : (
-          // Màn hình chờ khi chưa chọn conversation
+        )}
+
+        {/* ── Chat nhóm ── */}
+        {isGroupActive && (
+          <>
+            <div className="bg-white border-b border-gray-200 px-5 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold"
+                  style={{ backgroundColor: `hsl(${[...activeGroup.name].reduce((a,c) => a + c.charCodeAt(0), 0) % 360}, 55%, 42%)` }}>
+                  {activeGroup.name.slice(0, 2).toUpperCase()}
+                </div>
+                <div>
+                  <p className="font-semibold text-gray-900 text-sm">{activeGroup.name}</p>
+                  <p className="text-xs text-gray-500">{activeGroup.members?.length ?? 0} thành viên</p>
+                </div>
+              </div>
+              <span className="text-xs bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-3 py-1">
+                E2EE · Nhóm
+              </span>
+            </div>
+
+            {sendError && (
+              <div className="bg-red-50 text-red-600 text-xs text-center py-2 px-4 border-b border-red-100">
+                {sendError}
+                <button onClick={() => setSendError('')} className="ml-2 underline">Đóng</button>
+              </div>
+            )}
+
+            <MessageList
+              messages={messages} userId={userId} myUsername={username}
+              isLoading={isLoading} hasMore={hasMore} onLoadMore={loadMore}
+              peers={peersMap} onDeleteMessage={null} onReply={null}
+              onDownloadFile={handleDownloadFile}
+            />
+            <MessageInput
+              onSend={handleSendGroup} onSendFile={handleSendGroupFile} isSending={isSending}
+              disabled={false} replyTo={null} onCancelReply={null}
+            />
+          </>
+        )}
+
+        {/* ── Màn hình chờ ── */}
+        {!isDirectActive && !isGroupActive && (
           <div className="flex-1 flex flex-col items-center justify-center text-center p-8 space-y-3">
             <div className="w-16 h-16 rounded-full bg-blue-100 flex items-center justify-center">
               <svg className="w-8 h-8 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -372,7 +582,7 @@ export default function Chat() {
             </div>
             <p className="text-gray-700 font-medium">Chọn một cuộc trò chuyện</p>
             <p className="text-sm text-gray-400 max-w-xs">
-              Tìm người dùng trong thanh tìm kiếm bên trái để bắt đầu nhắn tin E2EE.
+              Chọn tin nhắn 1-1 hoặc nhóm ở sidebar bên trái để bắt đầu.
             </p>
           </div>
         )}
@@ -381,82 +591,48 @@ export default function Chat() {
       {/* Fingerprint Modal */}
       {showFingerprint && IK_pub && activePeer?.ikPub && (
         <FingerprintModal
-          myIKPub={IK_pub}
-          peerIKPub={activePeer.ikPub}
-          peerUsername={activePeer.username}
-          conversationId={activeConvId}
-          token={token}
-          onClose={() => setShowFingerprint(false)}
-          onVerified={handleVerified}
+          myIKPub={IK_pub} peerIKPub={activePeer.ikPub}
+          peerUsername={activePeer.username} conversationId={activeConvId}
+          token={token} onClose={() => setShowFingerprint(false)} onVerified={handleVerified}
         />
       )}
+      {showFingerprint && !activePeer?.ikPub && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm text-center space-y-4">
+            <p className="text-gray-700">
+              <span className="font-medium">{activePeer?.username}</span> chưa upload public key.
+            </p>
+            <button onClick={() => setShowFingerprint(false)}
+              className="px-6 py-2 bg-gray-100 rounded-xl text-sm font-medium hover:bg-gray-200">Đóng</button>
+          </div>
+        </div>
+      )}
 
-      {/* Overlay: tab này bị thay thế bởi phiên mới của cùng tài khoản */}
+      {/* Session replaced overlay */}
       {isSessionReplaced && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-sm text-center space-y-4">
-            <div className="w-14 h-14 rounded-full bg-amber-100 flex items-center justify-center mx-auto">
-              <svg className="w-7 h-7 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-              </svg>
-            </div>
-            <div>
-              <p className="font-semibold text-gray-900 text-base">Phiên đăng nhập bị thay thế</p>
-              <p className="text-sm text-gray-500 mt-1">
-                Tài khoản này vừa đăng nhập ở một tab khác. Tab này không còn nhận được tin nhắn mới.
-              </p>
-            </div>
-            <button
-              onClick={reconnect}
-              className="w-full py-2.5 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-700 transition-colors"
-            >
+            <p className="font-semibold text-gray-900">Phiên đăng nhập bị thay thế</p>
+            <p className="text-sm text-gray-500">Tab này không còn nhận được tin nhắn mới.</p>
+            <button onClick={reconnect}
+              className="w-full py-2.5 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-700">
               Kết nối lại
             </button>
           </div>
         </div>
       )}
 
-      {/* Modal xác nhận xóa tin nhắn */}
       {confirmModal?.type === 'deleteMessage' && (
-        <ConfirmModal
-          title="Xóa tin nhắn?"
-          body="Tin nhắn sẽ bị xóa vĩnh viễn. Người nhận cũng sẽ không thấy tin này nữa."
-          confirmLabel="Xóa"
-          danger
+        <ConfirmModal title="Xóa tin nhắn?" body="Tin nhắn sẽ bị xóa vĩnh viễn."
+          confirmLabel="Xóa" danger
           onConfirm={() => doDeleteMessage(confirmModal.id)}
-          onCancel={() => setConfirmModal(null)}
-        />
+          onCancel={() => setConfirmModal(null)} />
       )}
-
-      {/* Modal xác nhận xóa conversation */}
       {confirmModal?.type === 'deleteConv' && (
-        <ConfirmModal
-          title="Xóa cuộc trò chuyện?"
-          body="Toàn bộ lịch sử tin nhắn sẽ bị xóa vĩnh viễn và không thể khôi phục."
-          confirmLabel="Xóa"
-          danger
+        <ConfirmModal title="Xóa cuộc trò chuyện?" body="Toàn bộ lịch sử sẽ bị xóa vĩnh viễn."
+          confirmLabel="Xóa" danger
           onConfirm={() => doDeleteConv(confirmModal.id)}
-          onCancel={() => setConfirmModal(null)}
-        />
-      )}
-
-      {/* Thông báo khi peer chưa upload key (ikPub null) */}
-      {showFingerprint && (!activePeer?.ikPub) && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm text-center space-y-4">
-            <p className="text-gray-700">
-              <span className="font-medium">{activePeer?.username}</span> chưa upload public key lên server.
-              Yêu cầu họ đăng nhập lại để upload key.
-            </p>
-            <button
-              onClick={() => setShowFingerprint(false)}
-              className="px-6 py-2 bg-gray-100 rounded-xl text-sm font-medium hover:bg-gray-200"
-            >
-              Đóng
-            </button>
-          </div>
-        </div>
+          onCancel={() => setConfirmModal(null)} />
       )}
     </div>
   );

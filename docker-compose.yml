@@ -12,12 +12,46 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U e2ee_user -d e2ee_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7-alpine
     container_name: e2ee_redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    container_name: e2ee_backend
+    environment:
+      DATABASE_URL: postgresql://e2ee_user:e2ee_password@postgres:5432/e2ee_db
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: 480c8bfd082587b158fcbbb5cf18226e8251c1456ad4cfcdc8c910d9734ee7d4
+      PORT: 3000
+      ALLOWED_ORIGINS: http://localhost
+    volumes:
+      - uploads_data:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    container_name: e2ee_frontend
     ports:
-      - "6379:6379"
+      - "80:80"
+    depends_on:
+      - backend
 
 volumes:
   postgres_data:
+  uploads_data:

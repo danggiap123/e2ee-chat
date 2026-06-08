@@ -174,6 +174,98 @@ export async function deleteMessage(token, messageId) {
   }, token);
 }
 
+// POST /messages (group)
+// recipients: [{ userId, ciphertext, iv, aad, ekPub?, opkId?, ikPub? }]
+// Mỗi recipient nhận 1 bản mã riêng — server không đọc được nội dung
+// Return: { count, createdAt }
+export async function sendGroupMessage(token, { groupId, recipients }) {
+  return apiFetch('/messages', {
+    method: 'POST',
+    body: JSON.stringify({ groupId, recipients }),
+  }, token);
+}
+
+// GET /messages/group/:groupId?cursor=<id>&limit=20
+// Chỉ trả về bản mã của người đang đăng nhập (recipientId = me)
+// Return: { messages: [...], nextCursor }
+export async function loadGroupMessages(token, groupId, cursor = null, limit = 20) {
+  const params = new URLSearchParams({ limit });
+  if (cursor) params.set('cursor', cursor);
+  return apiFetch(`/messages/group/${groupId}?${params}`, {}, token);
+}
+
+// ─── GROUPS ───────────────────────────────────────────────────────────────────
+
+// POST /groups
+// memberIds: userId[] — danh sách thành viên (không bao gồm bản thân, server tự thêm)
+// Return: { groupId, name, createdBy }
+export async function createGroup(token, { name, memberIds }) {
+  return apiFetch('/groups', {
+    method: 'POST',
+    body: JSON.stringify({ name, memberIds }),
+  }, token);
+}
+
+// GET /groups
+// Return: { groups: [{ groupId, name, createdBy, members, lastMessageAt }] }
+export async function listGroups(token) {
+  return apiFetch('/groups', {}, token);
+}
+
+// GET /groups/:groupId/members
+// Return: { members: [{ id, username, ikPub, isAdmin, joinedAt }] }
+export async function getGroupMembers(token, groupId) {
+  return apiFetch(`/groups/${groupId}/members`, {}, token);
+}
+
+// POST /groups/:groupId/members — chỉ admin (người tạo) mới gọi được
+// Return: { message }
+export async function addGroupMember(token, groupId, userId) {
+  return apiFetch(`/groups/${groupId}/members`, {
+    method: 'POST',
+    body: JSON.stringify({ userId }),
+  }, token);
+}
+
+// DELETE /groups/:groupId/members/:userId — chỉ admin mới gọi được
+// Return: { message }
+export async function removeGroupMember(token, groupId, userId) {
+  return apiFetch(`/groups/${groupId}/members/${userId}`, {
+    method: 'DELETE',
+  }, token);
+}
+
+// ─── FILES ────────────────────────────────────────────────────────────────────
+
+// POST /files/upload — upload encrypted bytes (multipart/form-data)
+// encryptedBytes: Uint8Array — đã mã hóa client-side trước khi gửi
+// Return: { fileId }
+export async function uploadFile(token, encryptedBytes) {
+  const formData = new FormData();
+  formData.append('file', new Blob([encryptedBytes]));
+
+  const res = await fetch(`${BASE_URL}/files/upload`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  });
+
+  let body;
+  try { body = await res.json(); } catch { throw new Error('Không kết nối được server'); }
+  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+  return body;
+}
+
+// GET /files/:fileId — download encrypted bytes từ server
+// Return: Uint8Array — caller sẽ decrypt bằng SK
+export async function downloadFile(token, fileId) {
+  const res = await fetch(`${BASE_URL}/files/${fileId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return new Uint8Array(await res.arrayBuffer());
+}
+
 // ─── USERS ────────────────────────────────────────────────────────────────────
 
 // GET /users?search=keyword

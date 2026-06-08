@@ -9,69 +9,115 @@ datasource db {
 
 // Bảng người dùng
 model User {
-  id           String   @id @default(uuid()) // primary key, tự sinh UUID
-  username     String   @unique              // không được trùng username
-  email        String   @unique              // email công ty, phải có trong AllowedEmail trước khi đăng ký
-  passwordHash String                        // mật khẩu đã hash bằng argon2id, không lưu plaintext
-  createdAt    DateTime @default(now())      // tự điền thời gian tạo tài khoản
+  id           String   @id @default(uuid())
+  username     String   @unique
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
 
   keyBundle        KeyBundle?
   sentMessages     Message[]      @relation("SentMessages")
+  receivedMessages Message[]      @relation("ReceivedMessages")
   conversationsAsA Conversation[] @relation("ConversationA")
   conversationsAsB Conversation[] @relation("ConversationB")
+  groupsCreated    Group[]        @relation("GroupCreator")
+  groupMemberships GroupMember[]
+  uploadedFiles    UploadedFile[]
 }
 
 // Bảng public key của mỗi user — server chỉ thấy public key, không bao giờ thấy private key
 model KeyBundle {
   id     String @id @default(uuid())
-  userId String @unique          // mỗi user chỉ có 1 key bundle
+  userId String @unique
   user   User   @relation(fields: [userId], references: [id])
 
-  ikPub   String   // Identity Key public — định danh lâu dài của user
-  spkPub  String   // Signed PreKey public — thay định kỳ
-  spkSig  String   // Chữ ký Ed25519 trên SPK, để client xác minh SPK chưa bị giả mạo
-  opkPubs Json[]  // mỗi phần tử: { id: string, pub: string } 
+  ikPub   String
+  spkPub  String
+  spkSig  String
+  opkPubs Json[]
 }
 
-// Bảng cuộc trò chuyện — mỗi cặp user chỉ có 1 conversation
+// Bảng cuộc trò chuyện 1-1
 model Conversation {
-  id           String    @id @default(uuid())
-  participantA String
-  participantB String
+  id                  String    @id @default(uuid())
+  participantA        String
+  participantB        String
   fingerprintVerified Boolean   @default(false)
-  createdAt    DateTime  @default(now())
+  createdAt           DateTime  @default(now())
 
   userA    User      @relation("ConversationA", fields: [participantA], references: [id])
   userB    User      @relation("ConversationB", fields: [participantB], references: [id])
   messages Message[]
 
-  @@unique([participantA, participantB]) // không thể có 2 conversation giữa cùng 1 cặp user
+  @@unique([participantA, participantB])
   @@index([participantA])
   @@index([participantB])
 }
 
-// Whitelist email được phép đăng ký — IT Admin thêm trực tiếp vào DB
+// Bảng nhóm chat
+model Group {
+  id        String   @id @default(uuid())
+  name      String                        // tên nhóm
+  createdBy String                        // userId người tạo nhóm
+  creator   User     @relation("GroupCreator", fields: [createdBy], references: [id])
+  createdAt DateTime @default(now())
+
+  members  GroupMember[]
+  messages Message[]
+
+  @@index([createdBy])
+}
+
+// Bảng thành viên nhóm
+model GroupMember {
+  id       String   @id @default(uuid())
+  groupId  String
+  group    Group    @relation(fields: [groupId], references: [id])
+  userId   String
+  user     User     @relation(fields: [userId], references: [id])
+  joinedAt DateTime @default(now())
+
+  @@unique([groupId, userId])              // mỗi user chỉ xuất hiện 1 lần trong 1 nhóm
+  @@index([userId])                        // tìm nhanh các nhóm của 1 user
+}
+
+// Whitelist email được phép đăng ký
 model AllowedEmail {
   id        String    @id @default(uuid())
-  email     String    @unique              // mỗi email chỉ xuất hiện 1 lần
-  usedAt    DateTime?                      // null = chưa dùng, có giá trị = đã đăng ký xong
+  email     String    @unique
+  usedAt    DateTime?
   createdAt DateTime  @default(now())
 }
 
-// Bảng tin nhắn đã mã hóa — server không đọc được nội dung
+// Bảng theo dõi file đã upload — lưu metadata, nội dung thực sẽ ở filesystem
+model UploadedFile {
+  id         String   @id @default(uuid())
+  uploaderId String
+  uploader   User     @relation(fields: [uploaderId], references: [id])
+  createdAt  DateTime @default(now())
+}
+
+// Bảng tin nhắn đã mã hóa — dùng chung cho cả 1-1 và group
 model Message {
-  id             String       @id @default(uuid())
-  conversationId String
-  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  id             String        @id @default(uuid())
+  conversationId String?                              // null nếu là tin nhắn group
+  conversation   Conversation? @relation(fields: [conversationId], references: [id])
+  groupId        String?                              // null nếu là tin nhắn 1-1
+  group          Group?        @relation(fields: [groupId], references: [id])
+  recipientId    String?                              // null nếu là tin nhắn 1-1, có giá trị nếu là group
+  recipient      User?         @relation("ReceivedMessages", fields: [recipientId], references: [id])
   senderId       String
-  sender         User         @relation("SentMessages", fields: [senderId], references: [id])
-  ciphertext     String                         // nội dung đã mã hóa AES-256-GCM
-  iv             String                         // Initialization Vector 12 bytes, cần để giải mã
-  aad            String                         // Additional Authenticated Data — chống giả mạo metadata
-  createdAt      DateTime     @default(now())
-  ekPub          String?      // ← bộ 3 X3DH init: chỉ có ở tin đầu tiên
-  opkId          String?      // ← Bob cần để tìm đúng OPK private key
-  ikPub          String?      // ← IK_pub của sender, Bob cần để tính DH1
-  @@unique([conversationId, iv])                    // IV phải duy nhất trong conversation — chống replay attack
-  @@index([conversationId, createdAt(sort: Desc)]) // phân trang tin nhắn nhanh
+  sender         User          @relation("SentMessages", fields: [senderId], references: [id])
+  ciphertext     String
+  iv             String
+  aad            String
+  createdAt      DateTime      @default(now())
+  ekPub          String?
+  opkId          String?
+  ikPub          String?
+
+  @@unique([conversationId, iv])                          // chống replay attack cho 1-1
+  @@unique([groupId, recipientId, iv])                    // chống replay attack cho group
+  @@index([conversationId, createdAt(sort: Desc)])        // phân trang tin 1-1
+  @@index([groupId, recipientId, createdAt(sort: Desc)])  // phân trang tin group
 }

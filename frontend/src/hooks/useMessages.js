@@ -5,18 +5,18 @@ import * as storage from '../db/storage.js';
 import { performX3DH_receiver } from '../crypto/x3dh.js';
 import { decryptMessage } from '../crypto/aesGcm.js';
 
-// conversationId  : UUID của conversation đang xem
-// sessionKeysRef  : MutableRefObject<Map> từ useWebSocket — chia sẻ SK cache để không load lại IndexedDB
-export function useMessages(conversationId, sessionKeysRef) {
+// conversationId : UUID của conversation 1-1 (null khi dùng group mode)
+// sessionKeysRef : MutableRefObject<Map> từ useWebSocket — chia sẻ SK cache
+// groupId        : UUID của group (null khi dùng direct mode)
+export function useMessages(conversationId, sessionKeysRef, groupId = null) {
   const { token, userId, IK_secret, SPK_priv, wrappingKey } = useAuth();
 
   const [messages,  setMessages]  = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [hasMore,   setHasMore]   = useState(true);
 
-  const cursorRef = useRef(null); // ID tin cuối đã load — dùng cho loadMore
+  const cursorRef = useRef(null);
 
-  // Refs để các hàm async luôn đọc giá trị mới nhất mà không cần re-run effect
   const wrappingKeyRef = useRef(wrappingKey);
   const IK_secretRef   = useRef(IK_secret);
   const SPK_privRef    = useRef(SPK_priv);
@@ -29,34 +29,30 @@ export function useMessages(conversationId, sessionKeysRef) {
   useEffect(() => { userIdRef.current      = userId;      }, [userId]);
   useEffect(() => { tokenRef.current       = token;       }, [token]);
 
-  // Reset toàn bộ state khi user chuyển sang conversation khác rồi load lại từ đầu
+  // Reset + load lại khi chuyển conversation hoặc group
+  const activeId = groupId ?? conversationId;
   useEffect(() => {
-    if (!conversationId) return;
+    if (!activeId) return;
     setMessages([]);
     setHasMore(true);
     cursorRef.current = null;
     fetchBatch(null);
-  }, [conversationId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ─── Lấy SK: RAM cache → IndexedDB ───────────────────────────────────────────
-  async function getSK(convId) {
-    // Ưu tiên RAM cache từ useWebSocket — tránh đọc IndexedDB lại nếu đã có
-    if (sessionKeysRef?.current.has(convId)) {
-      return sessionKeysRef.current.get(convId);
+  // ─── Lấy SK cho 1-1: RAM cache → IndexedDB ───────────────────────────────────
+  async function getSK(cacheKey) {
+    if (sessionKeysRef?.current.has(cacheKey)) {
+      return sessionKeysRef.current.get(cacheKey);
     }
-
     const wKey = wrappingKeyRef.current;
     if (!wKey) return null;
-
-    const SK = await storage.loadSession(convId, wKey);
-    // Ghi vào cache để lần sau dùng lại
-    if (SK) sessionKeysRef?.current.set(convId, SK);
+    const SK = await storage.loadSession(cacheKey, wKey);
+    if (SK) sessionKeysRef?.current.set(cacheKey, SK);
     return SK;
   }
 
-  // ─── X3DH receiver cho tin đầu tiên trong lịch sử ───────────────────────────
-  // Chỉ cần chạy 1 lần / conversation — khi chưa có SK trong IndexedDB
-  async function runX3DHReceiver(initMsg, convId) {
+  // ─── X3DH receiver ────────────────────────────────────────────────────────────
+  async function runX3DHReceiver(initMsg, cacheKey) {
     const ik   = IK_secretRef.current;
     const spk  = SPK_privRef.current;
     const wKey = wrappingKeyRef.current;
@@ -65,23 +61,21 @@ export function useMessages(conversationId, sessionKeysRef) {
     if (!ik || !spk || !wKey) return null;
 
     const OPK_priv = await storage.getOPK(uid, initMsg.opkId, wKey);
-    if (!OPK_priv) return null; // OPK đã bị xóa hoặc opkId sai
+    if (!OPK_priv) return null;
 
     const { SK } = await performX3DH_receiver(
       { IK_secret: ik, SPK_priv: spk, OPK_priv },
       { ikPub: initMsg.ikPub, ekPub: initMsg.ekPub }
     );
 
-    // Lưu SK vào IndexedDB + cache — OPK dùng 1 lần, xóa ngay
-    await storage.saveSession(convId, SK, wKey);
+    await storage.saveSession(cacheKey, SK, wKey);
     await storage.deleteOPK(uid, initMsg.opkId);
-    sessionKeysRef?.current.set(convId, SK);
-
+    sessionKeysRef?.current.set(cacheKey, SK);
     return SK;
   }
 
-  // ─── Load 1 batch tin nhắn ───────────────────────────────────────────────────
-  async function fetchBatch(cursor) {
+  // ─── Load batch cho 1-1 ──────────────────────────────────────────────────────
+  async function fetchDirectBatch(cursor) {
     const tok = tokenRef.current;
     if (!conversationId || !tok) return;
 
@@ -89,77 +83,104 @@ export function useMessages(conversationId, sessionKeysRef) {
     try {
       const { messages: raw, nextCursor } = await api.loadMessages(tok, conversationId, cursor);
 
-      // Bước 1: lấy SK từ cache / IndexedDB
       let SK = await getSK(conversationId);
-
-      // Bước 2: chưa có SK → tìm tin X3DH init trong batch và chạy receiver
-      // Server trả newest-first → tin X3DH init (oldest, có ekPub) nằm cuối mảng raw
-      // Phải lấy SK trước rồi mới decrypt được tất cả tin còn lại trong batch
       if (!SK) {
         const initMsg = raw.find(m => m.ekPub);
         if (initMsg) {
-          try {
-            SK = await runX3DHReceiver(initMsg, conversationId);
-          } catch (err) {
-            console.error('[useMessages] X3DH receiver error:', err);
-          }
+          try { SK = await runX3DHReceiver(initMsg, conversationId); }
+          catch (err) { console.error('[useMessages] X3DH error:', err); }
         }
       }
 
-      // Bước 3: decrypt song song — tất cả tin trong 1 conversation dùng cùng 1 SK
       const decrypted = await Promise.all(raw.map(async (m) => {
-        if (!SK) {
-          return { id: m.id, senderId: m.senderId, plaintext: null, createdAt: m.createdAt, isDecryptError: true };
-        }
+        if (!SK) return { id: m.id, senderId: m.senderId, plaintext: null, createdAt: m.createdAt, isDecryptError: true };
         const plaintext = await decryptMessage(m.ciphertext, m.iv, m.aad, SK);
-        return {
-          id:             m.id,
-          senderId:       m.senderId,
-          plaintext,
-          createdAt:      m.createdAt,
-          isDecryptError: plaintext === null,
-        };
+        return { id: m.id, senderId: m.senderId, plaintext, createdAt: m.createdAt, isDecryptError: plaintext === null };
       }));
 
-      // Bước 4: đảo ngược để hiển thị cũ → mới từ trên xuống dưới
       const ordered = [...decrypted].reverse();
-
-      if (cursor === null) {
-        // Load lần đầu — thay toàn bộ
-        setMessages(ordered);
-      } else {
-        // loadMore — prepend tin cũ hơn lên đầu danh sách
-        setMessages(prev => [...ordered, ...prev]);
-      }
+      if (cursor === null) setMessages(ordered);
+      else setMessages(prev => [...ordered, ...prev]);
 
       cursorRef.current = nextCursor;
       setHasMore(nextCursor !== null);
     } catch (err) {
-      console.error('[useMessages] fetchBatch error:', err);
+      console.error('[useMessages] fetchDirectBatch error:', err);
     } finally {
       setIsLoading(false);
     }
   }
 
+  // ─── Load batch cho group ─────────────────────────────────────────────────────
+  // Group có nhiều sender → mỗi sender có SK riêng, cache key = `${groupId}:${senderId}`
+  async function fetchGroupBatch(cursor) {
+    const tok = tokenRef.current;
+    if (!groupId || !tok) return;
+
+    setIsLoading(true);
+    try {
+      const { messages: raw, nextCursor } = await api.loadGroupMessages(tok, groupId, cursor);
+
+      // Thu thập tất cả senderId duy nhất trong batch
+      const senderIds = [...new Set(raw.map(m => m.senderId))];
+
+      // Lấy SK cho từng sender (parallel)
+      const skMap = new Map(); // senderId → SK
+      await Promise.all(senderIds.map(async (senderId) => {
+        const cacheKey = `${groupId}:${senderId}`;
+        let SK = await getSK(cacheKey);
+
+        // Chưa có SK → tìm tin X3DH init của sender này trong batch
+        if (!SK) {
+          const initMsg = raw.find(m => m.senderId === senderId && m.ekPub);
+          if (initMsg) {
+            try { SK = await runX3DHReceiver(initMsg, cacheKey); }
+            catch (err) { console.error('[useMessages] group X3DH error:', err); }
+          }
+        }
+        if (SK) skMap.set(senderId, SK);
+      }));
+
+      // Decrypt song song — mỗi tin dùng SK của sender tương ứng
+      const decrypted = await Promise.all(raw.map(async (m) => {
+        const SK = skMap.get(m.senderId) ?? null;
+        if (!SK) return { id: m.id, senderId: m.senderId, plaintext: null, createdAt: m.createdAt, isDecryptError: true };
+        const plaintext = await decryptMessage(m.ciphertext, m.iv, m.aad, SK);
+        return { id: m.id, senderId: m.senderId, plaintext, createdAt: m.createdAt, isDecryptError: plaintext === null };
+      }));
+
+      const ordered = [...decrypted].reverse();
+      if (cursor === null) setMessages(ordered);
+      else setMessages(prev => [...ordered, ...prev]);
+
+      cursorRef.current = nextCursor;
+      setHasMore(nextCursor !== null);
+    } catch (err) {
+      console.error('[useMessages] fetchGroupBatch error:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  function fetchBatch(cursor) {
+    if (groupId) return fetchGroupBatch(cursor);
+    return fetchDirectBatch(cursor);
+  }
+
   // ─── Public API ───────────────────────────────────────────────────────────────
 
-  // Gọi khi user scroll lên đầu để xem tin cũ hơn
   function loadMore() {
     if (!hasMore || isLoading || !cursorRef.current) return;
     fetchBatch(cursorRef.current);
   }
 
-  // Chat.jsx gọi hàm này khi useWebSocket nhận tin mới real-time
-  // msg = { id, senderId, plaintext, createdAt, isDecryptError }
   function addMessage(msg) {
     setMessages(prev => {
-      // Chống trùng: ACK từ server và real-time relay có thể mang cùng msgId
       if (prev.some(m => m.id === msg.id)) return prev;
       return [...prev, msg];
     });
   }
 
-  // Chat.jsx gọi sau khi DELETE /messages/:id thành công
   function removeMessage(id) {
     setMessages(prev => prev.filter(m => m.id !== id));
   }

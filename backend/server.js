@@ -9,6 +9,8 @@ const keyRoutes = require('./routes/keys');
 const messageRoutes = require('./routes/messages');
 const conversationRoutes = require('./routes/conversations');
 const userRoutes = require('./routes/users');
+const groupRoutes = require('./routes/groups');
+const fileRoutes = require('./routes/files');
 
 const app = express(); // Tạo Express app — sẽ gắn vào http.Server để phục vụ REST API
 
@@ -29,6 +31,8 @@ app.use('/keys', keyRoutes);
 app.use('/messages', messageRoutes);
 app.use('/conversations', conversationRoutes);
 app.use('/users', userRoutes);
+app.use('/groups', groupRoutes);
+app.use('/files', fileRoutes);
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 

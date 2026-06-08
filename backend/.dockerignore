@@ -1,0 +1,6 @@
+node_modules
+.env
+*.log
+test-ws.js
+crypto-test.js
+benchmark.js

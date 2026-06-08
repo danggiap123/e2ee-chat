@@ -3,14 +3,22 @@ const router = express.Router();
 const WebSocket = require('ws');
 const { PrismaClient } = require('@prisma/client');
 const { requireAuth } = require('../middleware/auth');
-// clients = Map<userId, WebSocket> — in-memory registry từ ws/handler
-// Dùng require lazy (không circular) vì handler.js không require messages.js
 const { clients } = require('../ws/handler');
 
 const prisma = new PrismaClient();
 
 // ─── POST /messages ───────────────────────────────────────────────────────────
+// Dùng chung cho cả 1-1 và group.
+// 1-1:   body = { conversationId, ciphertext, iv, aad, ekPub?, opkId?, ikPub? }
+// Group: body = { groupId, recipients: [{ userId, ciphertext, iv, aad, ekPub?, opkId?, ikPub? }] }
 router.post('/', requireAuth, async (req, res) => {
+  const { groupId } = req.body;
+  if (groupId) return handleGroupMessage(req, res);
+  return handleDirectMessage(req, res);
+});
+
+// ─── Gửi tin nhắn 1-1 ────────────────────────────────────────────────────────
+async function handleDirectMessage(req, res) {
   try {
     const { conversationId, ciphertext, iv, aad, ekPub, opkId, ikPub } = req.body;
 
@@ -34,7 +42,6 @@ router.post('/', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Bạn không phải thành viên của conversation này' });
     }
 
-    // Server chỉ lưu bản mã — không đọc được nội dung (Blind Server model)
     const message = await prisma.message.create({
       data: {
         conversationId,
@@ -48,7 +55,6 @@ router.post('/', requireAuth, async (req, res) => {
       },
     });
 
-    // Relay real-time cho receiver nếu đang online
     const receiverId = conversation.participantA === req.user.userId
       ? conversation.participantB
       : conversation.participantA;
@@ -57,7 +63,7 @@ router.post('/', requireAuth, async (req, res) => {
     if (receiverSocket && receiverSocket.readyState === WebSocket.OPEN) {
       receiverSocket.send(JSON.stringify({
         type: 'message',
-        msgId:  message.id,
+        msgId: message.id,
         conversationId,
         senderId: req.user.userId,
         ciphertext,
@@ -70,16 +76,151 @@ router.post('/', requireAuth, async (req, res) => {
       }));
     }
 
+    return res.status(201).json({ messageId: message.id, createdAt: message.createdAt });
+  } catch (err) {
+    if (err.code === 'P2002') {
+      return res.status(409).json({ error: 'Phát hiện tấn công phát lại' });
+    }
+    console.error('[POST /messages 1-1]', err);
+    return res.status(500).json({ error: 'Lỗi server khi gửi tin nhắn' });
+  }
+}
+
+// ─── Gửi tin nhắn group ───────────────────────────────────────────────────────
+// Mỗi recipient nhận 1 bản ciphertext riêng — server không đọc được nội dung
+async function handleGroupMessage(req, res) {
+  try {
+    const { groupId, recipients } = req.body;
+
+    if (!Array.isArray(recipients) || recipients.length === 0) {
+      return res.status(400).json({ error: 'Thiếu danh sách recipients' });
+    }
+
+    // Validate từng recipient có đủ trường
+    for (const r of recipients) {
+      if (!r.userId || !r.ciphertext || !r.iv || !r.aad) {
+        return res.status(400).json({ error: 'Mỗi recipient cần có: userId, ciphertext, iv, aad' });
+      }
+    }
+
+    // Kiểm tra group tồn tại và sender là thành viên
+    const senderMembership = await prisma.groupMember.findUnique({
+      where: { groupId_userId: { groupId, userId: req.user.userId } },
+    });
+
+    if (!senderMembership) {
+      return res.status(403).json({ error: 'Bạn không phải thành viên của nhóm này' });
+    }
+
+    // Lấy danh sách thành viên để validate recipients
+    const members = await prisma.groupMember.findMany({
+      where: { groupId },
+      select: { userId: true },
+    });
+    const memberIds = new Set(members.map(m => m.userId));
+
+    for (const r of recipients) {
+      if (!memberIds.has(r.userId)) {
+        return res.status(403).json({ error: `User ${r.userId} không phải thành viên của nhóm` });
+      }
+    }
+
+    // Lưu tất cả bản mã trong 1 transaction
+    const messages = await prisma.$transaction(
+      recipients.map(r =>
+        prisma.message.create({
+          data: {
+            groupId,
+            recipientId: r.userId,
+            senderId: req.user.userId,
+            ciphertext: r.ciphertext,
+            iv: r.iv,
+            aad: r.aad,
+            ekPub: r.ekPub ?? null,
+            opkId: r.opkId ?? null,
+            ikPub: r.ikPub ?? null,
+          },
+        })
+      )
+    );
+
+    // Relay real-time cho từng recipient đang online
+    for (let i = 0; i < recipients.length; i++) {
+      const r = recipients[i];
+      const socket = clients.get(r.userId);
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+          type: 'group_message',
+          msgId: messages[i].id,
+          groupId,
+          senderId: req.user.userId,
+          ciphertext: r.ciphertext,
+          iv: r.iv,
+          aad: r.aad,
+          ...(r.ekPub  != null && { ekPub: r.ekPub }),
+          ...(r.opkId  != null && { opkId: r.opkId }),
+          ...(r.ikPub  != null && { ikPub: r.ikPub }),
+          createdAt: messages[i].createdAt,
+        }));
+      }
+    }
+
     return res.status(201).json({
-      messageId: message.id,
-      createdAt: message.createdAt,
+      count: messages.length,
+      createdAt: messages[0].createdAt,
     });
   } catch (err) {
     if (err.code === 'P2002') {
       return res.status(409).json({ error: 'Phát hiện tấn công phát lại' });
     }
-    console.error('[POST /messages]', err);
-    return res.status(500).json({ error: 'Lỗi server khi gửi tin nhắn' });
+    console.error('[POST /messages group]', err);
+    return res.status(500).json({ error: 'Lỗi server khi gửi tin nhắn nhóm' });
+  }
+}
+
+// ─── GET /messages/group/:groupId ─────────────────────────────────────────────
+// Load lịch sử tin nhắn nhóm — mỗi người chỉ thấy bản mã của mình
+// Phải đặt TRƯỚC /:convId để Express không nhầm "group" là convId
+router.get('/group/:groupId', requireAuth, async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const limit = Math.min(parseInt(req.query.limit) || 20, 100);
+    const cursor = req.query.cursor;
+
+    const membership = await prisma.groupMember.findUnique({
+      where: { groupId_userId: { groupId, userId: req.user.userId } },
+    });
+
+    if (!membership) {
+      return res.status(403).json({ error: 'Bạn không phải thành viên của nhóm này' });
+    }
+
+    const messages = await prisma.message.findMany({
+      where: { groupId, recipientId: req.user.userId },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      select: {
+        id: true,
+        senderId: true,
+        ciphertext: true,
+        iv: true,
+        aad: true,
+        ekPub: true,
+        opkId: true,
+        ikPub: true,
+        createdAt: true,
+      },
+    });
+
+    const nextCursor = messages.length === limit
+      ? messages[messages.length - 1].id
+      : null;
+
+    return res.json({ messages, nextCursor });
+  } catch (err) {
+    console.error('[GET /messages/group/:groupId]', err);
+    return res.status(500).json({ error: 'Lỗi server khi tải tin nhắn nhóm' });
   }
 });
 
@@ -87,7 +228,7 @@ router.post('/', requireAuth, async (req, res) => {
 router.get('/:convId', requireAuth, async (req, res) => {
   try {
     const { convId } = req.params;
-    const limit = Math.min(parseInt(req.query.limit) || 20, 100);//dù client có gửi limit bao nhiêu thì server cũng chỉ trả tối đa 100 tin mỗi lần để tránh quá tải, mặc định là 20 nếu client không gửi limit nào cả.
+    const limit = Math.min(parseInt(req.query.limit) || 20, 100);
     const cursor = req.query.cursor;
 
     const conversation = await prisma.conversation.findUnique({
@@ -148,28 +289,29 @@ router.delete('/:messageId', requireAuth, async (req, res) => {
       return res.status(404).json({ error: 'Tin nhắn không tồn tại' });
     }
 
-    // Chỉ người gửi mới được xóa — ngăn người nhận xóa tin của người khác
     if (message.senderId !== req.user.userId) {
       return res.status(403).json({ error: 'Bạn chỉ có thể xóa tin nhắn của chính mình' });
     }
 
     await prisma.message.delete({ where: { id: messageId } });
 
-    // Thông báo cho receiver đang online để họ xóa tin khỏi UI ngay lập tức
-    const conv = await prisma.conversation.findUnique({
-      where: { id: message.conversationId },
-    });
-    if (conv) {
-      const receiverId = conv.participantA === req.user.userId
-        ? conv.participantB
-        : conv.participantA;
-      const receiverSocket = clients.get(receiverId);
-      if (receiverSocket && receiverSocket.readyState === WebSocket.OPEN) {
-        receiverSocket.send(JSON.stringify({
-          type: 'message_deleted',
-          messageId,
-          conversationId: message.conversationId,
-        }));
+    // Notify receiver nếu là tin 1-1
+    if (message.conversationId) {
+      const conv = await prisma.conversation.findUnique({
+        where: { id: message.conversationId },
+      });
+      if (conv) {
+        const receiverId = conv.participantA === req.user.userId
+          ? conv.participantB
+          : conv.participantA;
+        const receiverSocket = clients.get(receiverId);
+        if (receiverSocket && receiverSocket.readyState === WebSocket.OPEN) {
+          receiverSocket.send(JSON.stringify({
+            type: 'message_deleted',
+            messageId,
+            conversationId: message.conversationId,
+          }));
+        }
       }
     }
 
