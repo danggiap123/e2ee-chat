@@ -22,6 +22,3 @@ Thumbs.db
 postgres_data/
 
 # Local project docs (không push lên git)
-CLAUDE.md
-PROGRESS.md
-docs/
