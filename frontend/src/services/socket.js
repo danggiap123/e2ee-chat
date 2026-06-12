@@ -32,22 +32,28 @@ function _connect(token) {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = `${protocol}//${window.location.host}${WS_PATH}?token=${token}`;
 
-  ws = new WebSocket(url);
+  // Lưu tham chiếu cục bộ để guard "socket đã bị thay thế":
+  // khi connectSocket() gọi lại, ws module-level trỏ sang socket mới;
+  // các handler của socket cũ kiểm tra `socket !== ws` rồi return sớm,
+  // tránh onclose của socket cũ fire reconnect sau khi intentionalClose đã reset về false.
+  const socket = new WebSocket(url);
+  ws = socket;
 
-  ws.onopen = () => {
-    // Bắt đầu ping keepalive 30s — giữ kết nối không bị Nginx/firewall timeout
+  socket.onopen = () => {
+    if (socket !== ws) return; // socket này đã bị thay thế, bỏ qua
     clearInterval(pingTimer);
     pingTimer = setInterval(() => {
       sendSocketMessage({ type: 'ping' });
     }, 30_000);
   };
 
-  ws.onmessage = (event) => {
+  socket.onmessage = (event) => {
+    if (socket !== ws) return; // socket này đã bị thay thế, bỏ qua
     let msg;
     try {
       msg = JSON.parse(event.data);
     } catch {
-      return; // JSON lỗi → bỏ qua, không crash
+      return;
     }
     // session_replaced: server đóng tab này vì tab mới của cùng tài khoản đã kết nối
     // Bật intentionalClose trước khi onclose fire → ngăn reconnect vô tận
@@ -60,12 +66,21 @@ function _connect(token) {
     if (cb) cb(msg);
   };
 
-  ws.onclose = (event) => {
+  socket.onclose = (event) => {
+    if (socket !== ws) return; // socket này đã bị thay thế, không động vào shared state
     clearInterval(pingTimer);
     pingTimer = null;
 
     // code 4009 = bị thay thế bởi tab mới — không reconnect, listener đã được gọi qua onmessage
     if (event.code === 4009) return;
+
+    // code 4001 = token hết hạn hoặc bị thu hồi — không reconnect, thông báo để FE redirect login
+    if (event.code === 4001) {
+      currentToken = null;
+      const cb = listeners.get('auth_expired');
+      if (cb) cb();
+      return;
+    }
 
     // Chỉ reconnect khi mất mạng đột ngột — không reconnect khi logout
     if (!intentionalClose && currentToken) {
@@ -73,7 +88,7 @@ function _connect(token) {
     }
   };
 
-  ws.onerror = () => {
+  socket.onerror = () => {
     // onerror luôn đi kèm onclose → không cần xử lý thêm ở đây
   };
 }

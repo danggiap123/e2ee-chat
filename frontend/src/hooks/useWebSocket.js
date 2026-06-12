@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext.jsx';
+import { useNavigate } from 'react-router-dom';
 import * as storage from '../db/storage.js';
 import { performX3DH_receiver } from '../crypto/x3dh.js';
 import { decryptMessage } from '../crypto/aesGcm.js';
@@ -11,7 +12,8 @@ import {
 } from '../services/socket.js';
 
 export function useWebSocket() {
-  const { token, userId, IK_secret, SPK_priv, wrappingKey } = useAuth();
+  const { token, userId, IK_secret, SPK_priv, wrappingKey, logout } = useAuth();
+  const navigate = useNavigate();
 
   const [onlineUsers,       setOnlineUsers]       = useState(new Set());
   const [isConnected,       setIsConnected]       = useState(false);
@@ -20,10 +22,14 @@ export function useWebSocket() {
   // Map<conversationId|groupSessionKey, CryptoKey> — cache SK trong RAM
   const sessionKeysRef = useRef(new Map());
 
-  const newMsgCallbackRef      = useRef(null);
-  const newGroupMsgCallbackRef = useRef(null);
-  const keyUploadedCallbackRef = useRef(null);
-  const messageDeletedCallbackRef = useRef(null);
+  const newMsgCallbackRef           = useRef(null);
+  const newGroupMsgCallbackRef      = useRef(null);
+  const keyUploadedCallbackRef      = useRef(null);
+  const messageDeletedCallbackRef   = useRef(null);
+  const groupMemberAddedCallbackRef = useRef(null);
+  const groupMemberRemovedCallbackRef = useRef(null);
+  const groupAdminTransferredCallbackRef = useRef(null);
+  const groupSystemMessageCallbackRef = useRef(null);
 
   // Refs tránh stale closure trong handler đăng ký 1 lần khi mount
   const wrappingKeyRef = useRef(wrappingKey);
@@ -79,9 +85,34 @@ export function useWebSocket() {
       messageDeletedCallbackRef.current?.({ messageId: msg.messageId, conversationId: msg.conversationId });
     });
 
+    // Thành viên mới được thêm vào nhóm
+    onSocketEvent('group_member_added', (msg) => {
+      groupMemberAddedCallbackRef.current?.(msg);
+    });
+
+    // Thành viên bị xóa hoặc tự rời nhóm
+    onSocketEvent('group_member_removed', (msg) => {
+      groupMemberRemovedCallbackRef.current?.(msg);
+    });
+
+    // Admin được chuyển sang người khác
+    onSocketEvent('group_admin_transferred', (msg) => {
+      groupAdminTransferredCallbackRef.current?.(msg);
+    });
+
+    // Tin hệ thống (thêm/rời nhóm) — thêm vào message list như tin thường nhưng không decrypt
+    onSocketEvent('group_system_message', (msg) => {
+      groupSystemMessageCallbackRef.current?.(msg);
+    });
+
     onSocketEvent('session_replaced', () => {
       setIsSessionReplaced(true);
       setIsConnected(false);
+    });
+
+    onSocketEvent('auth_expired', () => {
+      // Token hết hạn — logout sạch rồi về trang login
+      logout().finally(() => navigate('/login', { replace: true }));
     });
 
     return () => {
@@ -91,7 +122,12 @@ export function useWebSocket() {
       offSocketEvent('group_message');
       offSocketEvent('key_uploaded');
       offSocketEvent('message_deleted');
+      offSocketEvent('group_member_added');
+      offSocketEvent('group_member_removed');
+      offSocketEvent('group_admin_transferred');
+      offSocketEvent('group_system_message');
       offSocketEvent('session_replaced');
+      offSocketEvent('auth_expired');
       setIsConnected(false);
       disconnectSocket();
     };
@@ -206,10 +242,14 @@ export function useWebSocket() {
     newGroupMsgCallbackRef.current?.({ groupId, message });
   }
 
-  function onNewMessage(callback)      { newMsgCallbackRef.current      = callback; }
-  function onNewGroupMessage(callback) { newGroupMsgCallbackRef.current  = callback; }
-  function onKeyUploaded(callback)     { keyUploadedCallbackRef.current  = callback; }
-  function onMessageDeleted(callback)  { messageDeletedCallbackRef.current = callback; }
+  function onNewMessage(callback)           { newMsgCallbackRef.current           = callback; }
+  function onNewGroupMessage(callback)      { newGroupMsgCallbackRef.current      = callback; }
+  function onKeyUploaded(callback)          { keyUploadedCallbackRef.current      = callback; }
+  function onMessageDeleted(callback)       { messageDeletedCallbackRef.current   = callback; }
+  function onGroupMemberAdded(callback)     { groupMemberAddedCallbackRef.current = callback; }
+  function onGroupMemberRemoved(callback)   { groupMemberRemovedCallbackRef.current = callback; }
+  function onGroupAdminTransferred(callback){ groupAdminTransferredCallbackRef.current = callback; }
+  function onGroupSystemMessage(callback)   { groupSystemMessageCallbackRef.current = callback; }
 
   function reconnect() {
     if (token) connectSocket(token);
@@ -223,6 +263,10 @@ export function useWebSocket() {
     onNewGroupMessage,
     onKeyUploaded,
     onMessageDeleted,
+    onGroupMemberAdded,
+    onGroupMemberRemoved,
+    onGroupAdminTransferred,
+    onGroupSystemMessage,
     reconnect,
     sessionKeysRef,
   };

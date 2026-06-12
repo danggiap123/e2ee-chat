@@ -58,7 +58,8 @@ model Conversation {
 model Group {
   id        String   @id @default(uuid())
   name      String                        // tên nhóm
-  createdBy String                        // userId người tạo nhóm
+  createdBy String                        // userId người tạo nhóm (bất biến, dùng cho lịch sử)
+  adminId   String                        // userId admin hiện tại (thay đổi được khi chuyển quyền)
   creator   User     @relation("GroupCreator", fields: [createdBy], references: [id])
   createdAt DateTime @default(now())
 
@@ -98,6 +99,7 @@ model UploadedFile {
 }
 
 // Bảng tin nhắn đã mã hóa — dùng chung cho cả 1-1 và group
+// isSystem=true: tin hệ thống (thêm/rời nhóm), ciphertext/iv/aad là null
 model Message {
   id             String        @id @default(uuid())
   conversationId String?                              // null nếu là tin nhắn group
@@ -108,9 +110,11 @@ model Message {
   recipient      User?         @relation("ReceivedMessages", fields: [recipientId], references: [id])
   senderId       String
   sender         User          @relation("SentMessages", fields: [senderId], references: [id])
-  ciphertext     String
-  iv             String
-  aad            String
+  ciphertext     String?
+  iv             String?
+  aad            String?
+  isSystem       Boolean       @default(false)
+  systemText     String?
   createdAt      DateTime      @default(now())
   ekPub          String?
   opkId          String?
@@ -120,4 +124,5 @@ model Message {
   @@unique([groupId, recipientId, iv])                    // chống replay attack cho group
   @@index([conversationId, createdAt(sort: Desc)])        // phân trang tin 1-1
   @@index([groupId, recipientId, createdAt(sort: Desc)])  // phân trang tin group
+  @@index([groupId, isSystem, createdAt(sort: Desc)])     // load system messages theo nhóm
 }

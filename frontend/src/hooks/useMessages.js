@@ -141,12 +141,15 @@ export function useMessages(conversationId, sessionKeysRef, groupId = null) {
         if (SK) skMap.set(senderId, SK);
       }));
 
-      // Decrypt song song — mỗi tin dùng SK của sender tương ứng
+      // Decrypt song song — system messages bỏ qua, tin thường dùng SK của sender
       const decrypted = await Promise.all(raw.map(async (m) => {
+        if (m.isSystem) {
+          return { id: m.id, senderId: m.senderId, plaintext: null, createdAt: m.createdAt, isSystem: true, systemText: m.systemText, isDecryptError: false };
+        }
         const SK = skMap.get(m.senderId) ?? null;
-        if (!SK) return { id: m.id, senderId: m.senderId, plaintext: null, createdAt: m.createdAt, isDecryptError: true };
+        if (!SK) return { id: m.id, senderId: m.senderId, plaintext: null, createdAt: m.createdAt, isSystem: false, isDecryptError: true };
         const plaintext = await decryptMessage(m.ciphertext, m.iv, m.aad, SK);
-        return { id: m.id, senderId: m.senderId, plaintext, createdAt: m.createdAt, isDecryptError: plaintext === null };
+        return { id: m.id, senderId: m.senderId, plaintext, createdAt: m.createdAt, isSystem: false, isDecryptError: plaintext === null };
       }));
 
       const ordered = [...decrypted].reverse();

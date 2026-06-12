@@ -176,6 +176,19 @@ export default function MessageList({
       )}
 
       {messages.map((msg, i) => {
+        // Tin hệ thống: render dạng separator giữa các bubble
+        if (msg.isSystem) {
+          return (
+            <div key={msg.id} className="flex items-center gap-3 py-1 px-2">
+              <div className="flex-1 h-px bg-gray-200" />
+              <span className="text-xs text-gray-400 text-center whitespace-nowrap shrink-0 max-w-[80%]">
+                {msg.systemText}
+              </span>
+              <div className="flex-1 h-px bg-gray-200" />
+            </div>
+          );
+        }
+
         const isMine = msg.senderId === userId;
         const peer = peers?.get(msg.senderId);
         const peerUsername = peer?.username ?? msg.senderId.slice(0, 8);
@@ -183,7 +196,7 @@ export default function MessageList({
 
         // Gộp tin nhắn liên tiếp của cùng 1 người — chỉ hiện avatar ở tin đầu của chuỗi
         const prevMsg = messages[i - 1];
-        const isFirst = !prevMsg || prevMsg.senderId !== msg.senderId;
+        const isFirst = !prevMsg || prevMsg.senderId !== msg.senderId || prevMsg.isSystem;
 
         const { text, replyTo, file } = parsePlaintext(msg.plaintext);
 

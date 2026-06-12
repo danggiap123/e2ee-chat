@@ -218,7 +218,7 @@ export async function getGroupMembers(token, groupId) {
   return apiFetch(`/groups/${groupId}/members`, {}, token);
 }
 
-// POST /groups/:groupId/members — chỉ admin (người tạo) mới gọi được
+// POST /groups/:groupId/members — chỉ admin mới gọi được
 // Return: { message }
 export async function addGroupMember(token, groupId, userId) {
   return apiFetch(`/groups/${groupId}/members`, {
@@ -227,11 +227,24 @@ export async function addGroupMember(token, groupId, userId) {
   }, token);
 }
 
-// DELETE /groups/:groupId/members/:userId — chỉ admin mới gọi được
+// DELETE /groups/:groupId/members/:userId
+// Admin xóa người khác: không cần newAdminId
+// Tự rời nhóm (userId = mình): nếu là admin phải kèm newAdminId
 // Return: { message }
-export async function removeGroupMember(token, groupId, userId) {
+export async function removeGroupMember(token, groupId, userId, newAdminId = null) {
   return apiFetch(`/groups/${groupId}/members/${userId}`, {
     method: 'DELETE',
+    body: JSON.stringify(newAdminId ? { newAdminId } : {}),
+  }, token);
+}
+
+// PATCH /groups/:groupId/admin — chuyển quyền admin (không rời nhóm)
+// Chỉ admin hiện tại mới gọi được
+// Return: { message, newAdminId }
+export async function transferAdmin(token, groupId, newAdminId) {
+  return apiFetch(`/groups/${groupId}/admin`, {
+    method: 'PATCH',
+    body: JSON.stringify({ newAdminId }),
   }, token);
 }
 

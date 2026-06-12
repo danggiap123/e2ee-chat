@@ -12,6 +12,7 @@ import MessageList from '../components/MessageList.jsx';
 import MessageInput from '../components/MessageInput.jsx';
 import FingerprintModal from '../components/FingerprintModal.jsx';
 import ConfirmModal from '../components/ConfirmModal.jsx';
+import GroupInfoPanel from '../components/GroupInfoPanel.jsx';
 
 export default function Chat() {
   const { token, userId, username, IK_secret, IK_pub, wrappingKey, logout } = useAuth();
@@ -25,10 +26,11 @@ export default function Chat() {
   const [unreadCounts,    setUnreadCounts]    = useState(new Map());
 
   // ─── State group ──────────────────────────────────────────────────────────────
-  const [groups,           setGroups]           = useState([]);
-  const [activeGroupId,    setActiveGroupId]    = useState(null);
-  const [activeGroup,      setActiveGroup]      = useState(null); // { groupId, name, members, ... }
+  const [groups,            setGroups]            = useState([]);
+  const [activeGroupId,     setActiveGroupId]     = useState(null);
+  const [activeGroup,       setActiveGroup]       = useState(null); // { groupId, name, members, adminId, ... }
   const [unreadGroupCounts, setUnreadGroupCounts] = useState(new Map());
+  const [showGroupInfo,     setShowGroupInfo]     = useState(false);
 
   // ─── State chung ─────────────────────────────────────────────────────────────
   const [isSending,    setIsSending]    = useState(false);
@@ -40,6 +42,7 @@ export default function Chat() {
   const {
     onlineUsers, isConnected, isSessionReplaced,
     onNewMessage, onNewGroupMessage, onKeyUploaded, onMessageDeleted,
+    onGroupMemberAdded, onGroupMemberRemoved, onGroupAdminTransferred, onGroupSystemMessage,
     reconnect, sessionKeysRef,
   } = useWebSocket();
 
@@ -60,10 +63,12 @@ export default function Chat() {
   // ─── Refs chống stale closure ─────────────────────────────────────────────────
   const activeConvIdRef   = useRef(activeConvId);
   const activeGroupIdRef  = useRef(activeGroupId);
+  const activeGroupRef    = useRef(activeGroup);
   const addMessageRef     = useRef(addMessage);
   const removeMessageRef  = useRef(removeMessage);
   useEffect(() => { activeConvIdRef.current  = activeConvId;  }, [activeConvId]);
   useEffect(() => { activeGroupIdRef.current = activeGroupId; }, [activeGroupId]);
+  useEffect(() => { activeGroupRef.current   = activeGroup;   }, [activeGroup]);
   useEffect(() => { addMessageRef.current    = addMessage;    }, [addMessage]);
   useEffect(() => { removeMessageRef.current = removeMessage; }, [removeMessage]);
 
@@ -127,6 +132,100 @@ export default function Chat() {
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Thành viên mới được thêm vào nhóm
+  useEffect(() => {
+    onGroupMemberAdded(({ groupId, member, group: groupPayload }) => {
+      // Cập nhật danh sách thành viên nếu đang xem nhóm này
+      if (groupId === activeGroupIdRef.current) {
+        setActiveGroup(prev => {
+          if (!prev) return prev;
+          if (prev.members.some(m => m.id === member.id)) return prev;
+          return { ...prev, members: [...prev.members, member] };
+        });
+      }
+      // Nếu mình vừa được thêm vào nhóm → thêm nhóm vào sidebar
+      setGroups(prev => {
+        const exists = prev.some(g => g.groupId === groupId);
+        if (exists) {
+          // Cập nhật members của nhóm đã có
+          return prev.map(g => g.groupId === groupId
+            ? { ...g, members: g.members.some(m => m.id === member.id) ? g.members : [...g.members, member] }
+            : g
+          );
+        }
+        // Nhóm chưa có → thêm mới (mình là người được thêm vào)
+        return [groupPayload, ...prev];
+      });
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Thành viên bị xóa hoặc tự rời khỏi nhóm
+  useEffect(() => {
+    onGroupMemberRemoved(({ groupId, userId: removedUserId, newAdminId }) => {
+      const isMeRemoved = removedUserId === userId;
+
+      if (isMeRemoved) {
+        // Mình bị xóa hoặc tự rời → xóa nhóm khỏi sidebar, thoát về màn hình chờ
+        setGroups(prev => prev.filter(g => g.groupId !== groupId));
+        if (groupId === activeGroupIdRef.current) {
+          setActiveGroupId(null);
+          setActiveGroup(null);
+          setShowGroupInfo(false);
+        }
+        return;
+      }
+
+      // Người khác bị xóa → cập nhật danh sách thành viên
+      if (groupId === activeGroupIdRef.current) {
+        setActiveGroup(prev => {
+          if (!prev) return prev;
+          const updated = { ...prev, members: prev.members.filter(m => m.id !== removedUserId) };
+          // Nếu admin vừa rời + có newAdminId → cập nhật adminId
+          if (newAdminId) updated.adminId = newAdminId;
+          return updated;
+        });
+      }
+      setGroups(prev => prev.map(g => {
+        if (g.groupId !== groupId) return g;
+        const updatedMembers = g.members.filter(m => m.id !== removedUserId);
+        return { ...g, members: updatedMembers, ...(newAdminId && { adminId: newAdminId }) };
+      }));
+    });
+  }, [userId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Quyền admin được chuyển (không kèm rời nhóm)
+  useEffect(() => {
+    onGroupAdminTransferred(({ groupId, newAdminId }) => {
+      if (groupId === activeGroupIdRef.current) {
+        setActiveGroup(prev => prev ? { ...prev, adminId: newAdminId } : prev);
+      }
+      setGroups(prev => prev.map(g => g.groupId === groupId ? { ...g, adminId: newAdminId } : g));
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Tin hệ thống đến real-time → thêm vào message list nếu đang xem nhóm đó
+  useEffect(() => {
+    onGroupSystemMessage(({ groupId, message: sysMsg }) => {
+      if (groupId === activeGroupIdRef.current) {
+        addMessageRef.current?.({
+          id: sysMsg.id,
+          senderId: sysMsg.senderId,
+          plaintext: null,
+          createdAt: sysMsg.createdAt,
+          isSystem: true,
+          systemText: sysMsg.systemText,
+          isDecryptError: false,
+        });
+      }
+      setGroups(prev => {
+        const idx = prev.findIndex(g => g.groupId === groupId);
+        if (idx === -1) return prev;
+        const updated = { ...prev[idx], lastMessageAt: sysMsg.createdAt };
+        return [updated, ...prev.slice(0, idx), ...prev.slice(idx + 1)];
+      });
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ─── Chọn conversation 1-1 ───────────────────────────────────────────────────
   function handleSelectConv(conv) {
     setActiveConvId(conv.conversationId);
@@ -165,6 +264,7 @@ export default function Chat() {
     setActivePeer(null);
     setSendError('');
     setReplyTo(null);
+    setShowGroupInfo(false);
     setUnreadGroupCounts(prev => {
       if (!prev.has(group.groupId)) return prev;
       const m = new Map(prev); m.delete(group.groupId); return m;
@@ -174,6 +274,30 @@ export default function Chat() {
   function handleGroupCreated(group) {
     setGroups(prev => [group, ...prev]);
     handleSelectGroup(group);
+  }
+
+  // Callbacks từ GroupInfoPanel — cập nhật local state ngay (WS event cũng đến nhưng idempotent)
+  function handlePanelMemberAdded(member) {
+    setActiveGroup(prev => {
+      if (!prev || prev.members.some(m => m.id === member.id)) return prev;
+      return { ...prev, members: [...prev.members, member] };
+    });
+  }
+
+  function handlePanelMemberRemoved(removedId) {
+    setActiveGroup(prev => prev ? { ...prev, members: prev.members.filter(m => m.id !== removedId) } : prev);
+  }
+
+  function handlePanelAdminTransferred(newAdminId) {
+    setActiveGroup(prev => prev ? { ...prev, adminId: newAdminId } : prev);
+    setGroups(prev => prev.map(g => g.groupId === activeGroupId ? { ...g, adminId: newAdminId } : g));
+  }
+
+  function handlePanelLeftGroup() {
+    setShowGroupInfo(false);
+    setGroups(prev => prev.filter(g => g.groupId !== activeGroupId));
+    setActiveGroupId(null);
+    setActiveGroup(null);
   }
 
   // ─── Lấy hoặc tạo SK cho 1-1 ─────────────────────────────────────────────────
@@ -536,16 +660,20 @@ export default function Chat() {
         {isGroupActive && (
           <>
             <div className="bg-white border-b border-gray-200 px-5 py-3 flex items-center justify-between">
-              <div className="flex items-center gap-3">
+              {/* Click vào tên nhóm → mở GroupInfoPanel */}
+              <button
+                onClick={() => setShowGroupInfo(v => !v)}
+                className="flex items-center gap-3 hover:bg-gray-50 rounded-xl px-2 py-1 -ml-2 transition-colors"
+              >
                 <div className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold"
                   style={{ backgroundColor: `hsl(${[...activeGroup.name].reduce((a,c) => a + c.charCodeAt(0), 0) % 360}, 55%, 42%)` }}>
                   {activeGroup.name.slice(0, 2).toUpperCase()}
                 </div>
-                <div>
+                <div className="text-left">
                   <p className="font-semibold text-gray-900 text-sm">{activeGroup.name}</p>
-                  <p className="text-xs text-gray-500">{activeGroup.members?.length ?? 0} thành viên</p>
+                  <p className="text-xs text-gray-500">{activeGroup.members?.length ?? 0} thành viên · Nhấn để xem</p>
                 </div>
-              </div>
+              </button>
               <span className="text-xs bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-3 py-1">
                 E2EE · Nhóm
               </span>
@@ -633,6 +761,20 @@ export default function Chat() {
           confirmLabel="Xóa" danger
           onConfirm={() => doDeleteConv(confirmModal.id)}
           onCancel={() => setConfirmModal(null)} />
+      )}
+
+      {/* GroupInfoPanel — slide in từ phải khi click tên nhóm */}
+      {showGroupInfo && isGroupActive && (
+        <GroupInfoPanel
+          group={activeGroup}
+          currentUserId={userId}
+          token={token}
+          onClose={() => setShowGroupInfo(false)}
+          onMemberAdded={handlePanelMemberAdded}
+          onMemberRemoved={handlePanelMemberRemoved}
+          onAdminTransferred={handlePanelAdminTransferred}
+          onLeftGroup={handlePanelLeftGroup}
+        />
       )}
     </div>
   );

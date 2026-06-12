@@ -238,4 +238,29 @@ function broadcast(payload, excludeUserId) {
   }
 }
 
-module.exports = { initWebSocket, clients };
+// ─── Gửi đến tất cả thành viên của 1 nhóm đang online ────────────────────────
+// Truy vấn DB để lấy danh sách thành viên hiện tại, rồi gửi cho ai đang kết nối
+async function broadcastToGroupMembers(groupId, payload, excludeUserId = null) {
+  const members = await prisma.groupMember.findMany({
+    where: { groupId },
+    select: { userId: true },
+  });
+  const json = JSON.stringify(payload);
+  for (const { userId } of members) {
+    if (userId === excludeUserId) continue;
+    const socket = clients.get(userId);
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(json);
+    }
+  }
+}
+
+// Gửi cho 1 user cụ thể (dùng khi thêm thành viên mới — họ chưa có trong DB lúc broadcast)
+function sendToUser(userId, payload) {
+  const socket = clients.get(userId);
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    safeSend(socket, payload);
+  }
+}
+
+module.exports = { initWebSocket, clients, broadcastToGroupMembers, sendToUser };

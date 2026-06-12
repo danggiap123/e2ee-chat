@@ -196,7 +196,14 @@ router.get('/group/:groupId', requireAuth, async (req, res) => {
     }
 
     const messages = await prisma.message.findMany({
-      where: { groupId, recipientId: req.user.userId },
+      where: {
+        groupId,
+        // Trả về: bản mã của user này HOẶC tin hệ thống (isSystem=true, không cần recipientId)
+        OR: [
+          { recipientId: req.user.userId },
+          { isSystem: true },
+        ],
+      },
       orderBy: { createdAt: 'desc' },
       take: limit,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
@@ -209,6 +216,8 @@ router.get('/group/:groupId', requireAuth, async (req, res) => {
         ekPub: true,
         opkId: true,
         ikPub: true,
+        isSystem: true,
+        systemText: true,
         createdAt: true,
       },
     });
