@@ -1,518 +1,395 @@
-# Kiến Trúc Chi Tiết — Class Diagram & Mô Tả Lớp
+# Kiến Trúc Chi Tiết — Mô Tả Từng Module
+> Viết theo đúng code thực tế, ghi rõ tên hàm, tham số, kiểu dữ liệu
 
 ---
 
-## 1. Class Diagram
+## Tổng Quan Quan Hệ Module
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          CRYPTO LAYER (pure JS)                          │
-│                                                                          │
-│  ┌──────────────────────────────────┐                                   │
-│  │           <<module>> keyGen      │                                   │
-│  │──────────────────────────────────│                                   │
-│  │ (không có state — pure functions)│                                   │
-│  │──────────────────────────────────│                                   │
-│  │ + generateIdentityKey()          │                                   │
-│  │    : {IK_pub:U8A(32), IK_secret:U8A(64)}                           │
-│  │ + generateSignedPreKey(IK_secret)│                                   │
-│  │    : {SPK_pub:U8A(32), SPK_priv:U8A(32), SPK_sig:U8A(64)}         │
-│  │ + generateOneTimePreKeys(n=100)  │                                   │
-│  │    : [{id:UUID, OPK_pub, OPK_priv}]                                │
-│  │ + deriveWrappingKey(password, salt)                                 │
-│  │    : CryptoKey (AES-GCM, 256-bit)                                  │
-│  │ + wrapPrivateKey(privKey, wrappingKey)                              │
-│  │    : {wrapped:base64, iv:base64}                                   │
-│  │ + unwrapPrivateKey(wrappedB64, ivB64, wrappingKey)                  │
-│  │    : Uint8Array                                                      │
-│  └──────────────────────────────────┘                                   │
-│                                                                          │
-│  ┌──────────────────────────────────┐                                   │
-│  │           <<module>> x3dh        │                                   │
-│  │──────────────────────────────────│                                   │
-│  │ + verifySignedPreKey(IK_pub_B, SPK_sig, SPK_pub_B)                 │
-│  │    : boolean                                                         │
-│  │ + performX3DH_sender(myKeys, bobBundle)                             │
-│  │    : {SK:CryptoKey, EK_pub:U8A, OPK_id:string, IK_pub:U8A}        │
-│  │ + performX3DH_receiver(myKeys, initMsg)                             │
-│  │    : {SK:CryptoKey}                                                  │
-│  │ [private] hkdf(ikm: Uint8Array)                                     │
-│  │    : CryptoKey                                                       │
-│  │ [private] concat(...arrays)                                          │
-│  │    : Uint8Array                                                      │
-│  └──────────────────────────────────┘                                   │
-│                                                                          │
-│  ┌──────────────────────────────────┐                                   │
-│  │          <<module>> aesGcm       │                                   │
-│  │──────────────────────────────────│                                   │
-│  │ + encryptMessage(plain, SK, convId, senderId)                       │
-│  │    : {ciphertext:b64, iv:b64, aad:string}                          │
-│  │ + decryptMessage(ctB64, ivB64, aad, SK)                             │
-│  │    : string | null                                                   │
-│  │ + encryptBytes(bytes, SK)                                            │
-│  │    : {encryptedBytes:U8A, fileIv:b64}                              │
-│  │ + decryptBytes(encBytes, fileIvB64, SK)                             │
-│  │    : Uint8Array | null                                               │
-│  │ + encryptBytesWithRandomKey(bytes)                                  │
-│  │    : {encryptedBytes, fileIv:b64, fileKey:b64}                     │
-│  │ + decryptBytesWithKey(encBytes, fileIvB64, fileKeyB64)              │
-│  │    : Uint8Array | null                                               │
-│  └──────────────────────────────────┘                                   │
-│                                                                          │
-│  ┌──────────────────────────────────┐                                   │
-│  │       <<module>> fingerprint     │                                   │
-│  │──────────────────────────────────│                                   │
-│  │ + generateFingerprint(IK_A, IK_B)                                   │
-│  │    : string (60 chữ số decimal)                                     │
-│  │ [private] lexCompare(a, b)                                          │
-│  │    : number                                                           │
-│  └──────────────────────────────────┘                                   │
-└─────────────────────────────────────────────────────────────────────────┘
+Register.jsx / Login.jsx
+        │
+        ▼
+AuthContext.jsx          ← điều phối toàn bộ auth + crypto + storage
+   ├── crypto/keyGen.js  ← sinh key, PBKDF2, wrap/unwrap
+   ├── crypto/x3dh.js    ← X3DH sender/receiver
+   ├── crypto/aesGcm.js  ← encrypt/decrypt tin nhắn và file
+   ├── crypto/fingerprint.js ← tính 60 chữ số fingerprint
+   ├── db/storage.js     ← Dexie/IndexedDB: lưu key và session
+   └── services/api.js   ← tất cả REST call
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      DB LAYER (Dexie / IndexedDB)                        │
-│                                                                          │
-│  ┌──────────────────────────────────┐                                   │
-│  │         <<module>> storage       │                                   │
-│  │──────────────────────────────────│                                   │
-│  │ [private] db: Dexie              │                                   │
-│  │   tables: privateKeys, sessions  │                                   │
-│  │──────────────────────────────────│                                   │
-│  │ + savePrivateKeys(userId, wrapSalt, wrappingKey, IK_secret, SPK_priv, opkList)
-│  │ + loadPrivateKeys(userId, wrappingKey)                               │
-│  │    : {wrapSalt, IK_secret, IK_pub, SPK_priv, opkMap:Map}           │
-│  │ + getWrapSalt(userId) : Uint8Array|null                             │
-│  │ + hasPrivateKeys(userId) : boolean                                  │
-│  │ + getOPK(userId, opkId, wrappingKey) : Uint8Array|null              │
-│  │ + deleteOPK(userId, opkId) : void                                   │
-│  │ + saveSession(convId, SK, wrappingKey) : void                       │
-│  │ + loadSession(convId, wrappingKey) : CryptoKey|null                 │
-│  │ + exportKeysToFile(userId) : void (download)                        │
-│  │ + importKeysFromFile(file) : void                                   │
-│  └──────────────────────────────────┘                                   │
-└─────────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         SERVICE LAYER                                    │
-│                                                                          │
-│  ┌──────────────────────────────────┐                                   │
-│  │          <<module>> api          │                                   │
-│  │──────────────────────────────────│                                   │
-│  │ + register(username, password)   │                                   │
-│  │ + login(username, password)      │                                   │
-│  │ + logout(token)                  │                                   │
-│  │ + uploadKeys(token, keyBundle)   │                                   │
-│  │ + fetchKeyBundle(token, userId)  │                                   │
-│  │ + uploadMoreOPKs(token, opkPubs) │                                   │
-│  │ + createConversation(token, recipientId)                             │
-│  │ + listConversations(token)       │                                   │
-│  │ + verifyFingerprint(token, convId)                                   │
-│  │ + deleteConversation(token, convId)                                  │
-│  │ + sendMessage(token, payload)    │                                   │
-│  │ + loadMessages(token, convId, cursor, limit)                         │
-│  │ + deleteMessage(token, msgId)    │                                   │
-│  │ + searchUsers(token, keyword)    │                                   │
-│  └──────────────────────────────────┘                                   │
-│                                                                          │
-│  ┌──────────────────────────────────┐                                   │
-│  │         <<module>> socket        │                                   │
-│  │──────────────────────────────────│                                   │
-│  │ [private] ws: WebSocket|null     │                                   │
-│  │ [private] listeners: Map<type,fn>│                                   │
-│  │ [private] currentToken: string   │                                   │
-│  │ [private] intentionalClose: bool │                                   │
-│  │──────────────────────────────────│                                   │
-│  │ + connectSocket(token)           │                                   │
-│  │ + disconnectSocket()             │                                   │
-│  │ + sendSocketMessage(payload)     │                                   │
-│  │ + onSocketEvent(type, callback)  │                                   │
-│  │ + offSocketEvent(type)           │                                   │
-│  └──────────────────────────────────┘                                   │
-└─────────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      REACT CONTEXT / HOOKS                               │
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │                     AuthContext                                    │  │
-│  │──────────────────────────────────────────────────────────────────│  │
-│  │ State (trong RAM):                                                │  │
-│  │   token:       string|null    ← JWT Bearer token                 │  │
-│  │   userId:      string|null    ← UUID từ server                   │  │
-│  │   username:    string|null                                        │  │
-│  │   IK_secret:   Uint8Array     ← Ed25519 64B (đã unwrap)          │  │
-│  │   IK_pub:      Uint8Array     ← Ed25519 32B = IK_secret.slice(32)│  │
-│  │   SPK_priv:    Uint8Array     ← X25519 32B (đã unwrap)           │  │
-│  │   wrappingKey: CryptoKey      ← AES-GCM từ PBKDF2(password)      │  │
-│  │──────────────────────────────────────────────────────────────────│  │
-│  │ Functions:                                                        │  │
-│  │   login(username, password) : Promise<void>                       │  │
-│  │   logout() : void                                                 │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │                    useWebSocket (hook)                             │  │
-│  │──────────────────────────────────────────────────────────────────│  │
-│  │ State:                                                            │  │
-│  │   onlineUsers:       Set<userId>                                  │  │
-│  │   isConnected:       boolean                                      │  │
-│  │   isSessionReplaced: boolean                                      │  │
-│  │ Refs:                                                             │  │
-│  │   sessionKeysRef:    Map<convId, CryptoKey>                       │  │
-│  │   newMsgCallbackRef: Function                                     │  │
-│  │   wrappingKeyRef, IK_secretRef, SPK_privRef, userIdRef            │  │
-│  │──────────────────────────────────────────────────────────────────│  │
-│  │ Returns:                                                          │  │
-│  │   { onlineUsers, isConnected, sessionKeysRef,                     │  │
-│  │     setNewMessageCallback, setGroupMessageCallback, ...}          │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │                    useMessages (hook)                              │  │
-│  │──────────────────────────────────────────────────────────────────│  │
-│  │ State:                                                            │  │
-│  │   messages:   Message[]                                           │  │
-│  │   isLoading:  boolean                                             │  │
-│  │   hasMore:    boolean                                             │  │
-│  │   cursor:     string|null                                         │  │
-│  │──────────────────────────────────────────────────────────────────│  │
-│  │ Functions:                                                        │  │
-│  │   loadInitial(convId, SK) : Promise<void>                         │  │
-│  │   loadMore() : Promise<void>                                      │  │
-│  │   addMessage(msg) : void                                          │  │
-│  │   deleteMessageById(msgId) : void                                 │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────────┐
-│                  BACKEND MODULES (Node.js / Express)                     │
-│                                                                          │
-│  ┌──────────────────────────────────┐                                   │
-│  │       <<module>> handler.js      │                                   │
-│  │──────────────────────────────────│                                   │
-│  │ [private] clients: Map<userId,ws>│  ← in-memory relay map           │
-│  │──────────────────────────────────│                                   │
-│  │ + initWebSocket(server) : void   │                                   │
-│  │ [private] onConnect(ws, req)     │                                   │
-│  │ [private] onMessage(ws, userId, raw)                                │
-│  │ [private] broadcast(payload, excludeId)                             │
-│  │ [private] safeSend(ws, payload)  │                                   │
-│  └──────────────────────────────────┘                                   │
-│                                                                          │
-│  ┌──────────────────────────────────┐                                   │
-│  │      <<middleware>> auth.js      │                                   │
-│  │──────────────────────────────────│                                   │
-│  │ + requireAuth(req, res, next)    │                                   │
-│  │   1. Lấy Bearer token từ header  │                                   │
-│  │   2. jwt.verify(token, secret)   │                                   │
-│  │   3. redis.get("blocklist:"+token)                                  │
-│  │   4. req.user = decoded payload  │                                   │
-│  └──────────────────────────────────┘                                   │
-└─────────────────────────────────────────────────────────────────────────┘
+Chat.jsx                 ← UI chính
+   ├── useWebSocket.js   ← WS, nhận tin, X3DH receiver
+   ├── useMessages.js    ← quản lý list tin nhắn, cursor pagination
+   └── services/socket.js ← singleton WebSocket connection
 ```
 
 ---
 
-## 2. Mô Tả Chi Tiết Từng Module
+## Module `crypto/keyGen.js`
 
----
+### `generateIdentityKey() → {IK_pub, IK_secret}`
 
-### Module `keyGen.js`
-
-**Mục đích:** Sinh toàn bộ key material cần thiết cho X3DH + bảo vệ private key.
-
-#### `generateIdentityKey()`
 ```
 Input:  (không có)
-Output: { IK_pub: Uint8Array(32), IK_secret: Uint8Array(64) }
+Output:
+  IK_pub:    Uint8Array(32) — Ed25519 public key
+  IK_secret: Uint8Array(64) — Ed25519 secret key
+                              Format libsodium: seed(32B) + pub(32B)
+                              → IK_pub = IK_secret.slice(32)
 
-Dùng: sodium.crypto_sign_keypair() → Ed25519
+Dùng: sodium.crypto_sign_keypair()
+
 Tại sao Ed25519 (không phải X25519)?
   IK cần 2 vai trò:
-    1. Ký SPK → phải là Ed25519 (thuật toán chữ ký)
-    2. Tham gia DH1, DH2 trong X3DH → phải convert sang X25519
-  libsodium có hàm convert: crypto_sign_ed25519_sk_to_curve25519()
-
-Tại sao IK_secret dài 64B thay vì 32B?
-  libsodium format: Ed25519 secret = seed(32B) + public(32B) ghép lại
-  IK_pub = IK_secret.slice(32) → không cần lưu riêng IK_pub
+    1. Ký SPK → phải là Ed25519 (thuật toán chữ ký số)
+    2. Tham gia DH trong X3DH → convert sang X25519 khi cần
+  libsodium có hàm convert an toàn: crypto_sign_ed25519_sk_to_curve25519()
 ```
 
-#### `generateSignedPreKey(IK_secret)`
+### `generateSignedPreKey(IK_secret) → {SPK_pub, SPK_priv, SPK_sig}`
+
 ```
 Input:  IK_secret: Uint8Array(64)
-Output: { SPK_pub: U8A(32), SPK_priv: U8A(32), SPK_sig: U8A(64) }
+Output:
+  SPK_pub:  Uint8Array(32) — X25519 public key
+  SPK_priv: Uint8Array(32) — X25519 private key
+  SPK_sig:  Uint8Array(64) — Ed25519 chữ ký của IK_priv lên SPK_pub
 
-Dùng: sodium.crypto_box_keypair() → X25519 (không cần ký)
-Ký:   sodium.crypto_sign_detached(SPK_pub, IK_secret) → Ed25519 sig
-Tại sao ký SPK? Bất kỳ ai có IK_pub đều verify được:
-  "SPK này thực sự được tạo bởi người có IK_priv tương ứng"
-  Ngăn server thay SPK bằng SPK giả để MITM
+Bên trong:
+  pair = sodium.crypto_box_keypair()          → X25519
+  SPK_sig = sodium.crypto_sign_detached(pair.publicKey, IK_secret)
+
+Tại sao ký SPK?
+  Bất kỳ ai có IK_pub_B đều verify được:
+  "SPK này thực sự được Bob tạo ra"
+  Nếu bỏ: server thay SPK bằng key giả → MITM
 ```
 
-#### `deriveWrappingKey(password, salt)`
+### `generateOneTimePreKeys(n=100) → [{id, OPK_pub, OPK_priv}]`
+
 ```
-Input:  password: string, salt: Uint8Array(16)
-Output: CryptoKey (AES-256-GCM, non-extractable, usage: deriveKey)
+Input:  n: number = 100
+Output: Array(100) của {
+  id:       string (UUID v4 — crypto.randomUUID())
+  OPK_pub:  Uint8Array(32) — X25519 public key
+  OPK_priv: Uint8Array(32) — X25519 private key
+}
 
-Dùng: PBKDF2-SHA256, iterations=600_000
-Tại sao 600k vòng? 
-  NIST SP 800-132 khuyến nghị ≥600k vòng với SHA-256 (2023)
-  ~1 giây trên máy hiện đại → brute-force 1M password = 1M giây
-
-Tại sao PBKDF2 không phải Argon2id?
-  PBKDF2 là Web Crypto API native → không cần WASM bundle
-  Argon2id an toàn hơn (memory-hard) nhưng cần thêm ~50KB WASM
-  Đây là trade-off phạm vi đồ án
+Dùng: sodium.crypto_box_keypair() × 100
 ```
 
-#### `wrapPrivateKey(privKey, wrappingKey)`
+### `deriveWrappingKey(password, salt) → CryptoKey`
+
 ```
-Input:  privKey: Uint8Array, wrappingKey: CryptoKey
-Output: { wrapped: base64, iv: base64 }
+Input:
+  password: string — mật khẩu người dùng
+  salt:     Uint8Array(16) — random, lưu cùng IndexedDB
 
-iv = crypto.getRandomValues(12B) — IV ngẫu nhiên RIÊNG cho từng key
-wrapped = AES-256-GCM.encrypt(privKey, wrappingKey, iv)
+Output: CryptoKey (AES-256-GCM, extractable:false, usage:encrypt/decrypt)
 
-Nếu bỏ hàm này:
-  Private key lưu plaintext trong IndexedDB
-  Bất kỳ JS nào trên trang (kể cả extension) đọc được
+Bên trong:
+  1. importKey('raw', encode(password), 'PBKDF2', false, ['deriveKey'])
+  2. deriveKey({name:'PBKDF2', salt, iterations:600_000, hash:'SHA-256'},
+               keyMaterial,
+               {name:'AES-GCM', length:256},
+               false, ['encrypt','decrypt'])
+
+Tham số 600_000: OWASP 2023 minimum cho PBKDF2-SHA256
+  → ~1 giây trên máy hiện đại → brute-force 1M password = ~1M giây
+```
+
+### `wrapPrivateKey(privKey, wrappingKey) → {wrapped:string, iv:string}`
+
+```
+Input:
+  privKey:     Uint8Array — private key cần bảo vệ
+  wrappingKey: CryptoKey — từ deriveWrappingKey()
+
+Output:
+  wrapped: base64 string — ciphertext AES-GCM
+  iv:      base64 string — 12B random IV
+
+Bên trong:
+  iv = crypto.getRandomValues(Uint8Array(12))
+  wrapped = AES-GCM.encrypt(privKey, wrappingKey, iv)
+  return { wrapped: toBase64(wrapped), iv: toBase64(iv) }
+
+Mỗi key có IV riêng → dù cùng wrappingKey, ciphertext khác nhau
+```
+
+### `unwrapPrivateKey(wrappedB64, ivB64, wrappingKey) → Uint8Array`
+
+```
+Throw: 'Sai mật khẩu — không thể mở khóa private key'
+  khi AES-GCM.decrypt fail (wrappingKey sai = password sai)
 ```
 
 ---
 
-### Module `x3dh.js`
+## Module `crypto/x3dh.js`
 
-**Mục đích:** Implement giao thức X3DH (Extended Triple Diffie-Hellman) theo Signal spec.
+### `verifySignedPreKey(IK_pub_B, SPK_sig, SPK_pub_B) → boolean`
 
-#### `verifySignedPreKey(IK_pub_B, SPK_sig, SPK_pub_B)`
 ```
-Input:  
-  IK_pub_B: Uint8Array(32)  — public key của Bob
-  SPK_sig:  Uint8Array(64)  — chữ ký Ed25519
-  SPK_pub_B:Uint8Array(32)  — Signed PreKey của Bob
+Input:
+  IK_pub_B:  Uint8Array(32) — Ed25519 public key của Bob
+  SPK_sig:   Uint8Array(64) — chữ ký cần verify
+  SPK_pub_B: Uint8Array(32) — message đã được ký
 
 Output: boolean
 
 Dùng: sodium.crypto_sign_verify_detached(SPK_sig, SPK_pub_B, IK_pub_B)
 
-Nếu return false: dừng X3DH, throw error
-Nếu bỏ hàm này: server có thể thay SPK_pub_B bằng SPK giả của mình
-  → tính DH với server thay vì Bob → server đọc được toàn bộ tin nhắn
+Nếu return false: performX3DH_sender throw 'SPK signature invalid — possible MITM attack'
+Bỏ hàm này: server có thể thay SPK của Bob → đọc mọi tin nhắn
 ```
 
-#### `performX3DH_sender(myKeys, bobBundle)`
+### `performX3DH_sender(myKeys, bobBundle) → {SK, EK_pub, OPK_id, IK_pub}`
+
 ```
 Input:
-  myKeys: {
-    IK_secret: Uint8Array(64),  // Ed25519 secret key của Alice
-    IK_pub:    Uint8Array(32),  // Ed25519 public key của Alice
+  myKeys = {
+    IK_secret: Uint8Array(64),  // Ed25519 secret của Alice
+    IK_pub:    Uint8Array(32),  // Ed25519 public của Alice
   }
-  bobBundle: {                  // Dữ liệu từ GET /keys/{bobId}
+  bobBundle = {                 // từ GET /keys/{bobId}
     ikPub:  string (base64),    // Ed25519 pub của Bob
-    spkPub: string (base64),    // X25519 pub (SPK)
-    spkSig: string (base64),    // Ed25519 signature
-    opkPub: string (base64),    // X25519 pub (OPK)
-    opkId:  string (UUID),      // Bob dùng để tìm OPK_priv
+    spkPub: string (base64),    // X25519 pub (SPK_B)
+    spkSig: string (base64),    // chữ ký Ed25519
+    opkPub: string (base64),    // X25519 pub (OPK_B) — 1 lần dùng
+    opkId:  string (UUID),
   }
 
 Output: {
-  SK:     CryptoKey,            // AES-256-GCM Session Key
-  EK_pub: Uint8Array(32),       // Bob cần để tính lại SK
-  OPK_id: string,               // Bob cần để tìm OPK_priv
-  IK_pub: Uint8Array(32),       // Bob cần để tính DH1, DH2
+  SK:     CryptoKey (AES-256-GCM)
+  EK_pub: Uint8Array(32) — Bob cần để tính DH2,3,4
+  OPK_id: string — Bob cần để tìm OPK_priv
+  IK_pub: Uint8Array(32) — Bob cần để tính DH1,DH2
 }
 
-Các bước:
-  1. verifySignedPreKey(...)  → throw nếu false
-  2. Convert IK Ed25519 → X25519:
-     IK_priv = sodium.crypto_sign_ed25519_sk_to_curve25519(IK_secret)
-     IK_pub_B_x = sodium.crypto_sign_ed25519_pk_to_curve25519(IK_pub_B)
-  3. EK = sodium.crypto_box_keypair()  ← X25519 ephemeral
-  4. DH1..DH4 (xem SD-03)
-  5. IKM = F(0xFF×32) || DH1 || DH2 || DH3 || DH4
-  6. SK = HKDF-SHA256(IKM)
-  7. DH1..4, EK_priv, IK_priv .fill(0)  ← forward secrecy
-
-Tại sao prefix F = 0xFF×32?
-  Signal spec yêu cầu để phân biệt X25519 (0xFF) vs X448 (0x00)
-  Tránh nhầm lẫn nếu sau này nâng cấp lên X448
+Bên trong (theo đúng code x3dh.js):
+  1. verifySignedPreKey(...) → throw nếu false
+  2. EK = sodium.crypto_box_keypair()
+  3. IK_priv   = crypto_sign_ed25519_sk_to_curve25519(IK_secret) // Ed25519→X25519
+     IK_pub_B_x = crypto_sign_ed25519_pk_to_curve25519(IK_pub_B)
+  4. DH1 = crypto_scalarmult(IK_priv,       SPK_pub_B)  // mutual auth
+     DH2 = crypto_scalarmult(EK.privateKey, IK_pub_B_x) // mutual auth
+     DH3 = crypto_scalarmult(EK.privateKey, SPK_pub_B)  // forward secrecy
+     DH4 = crypto_scalarmult(EK.privateKey, OPK_pub_B)  // forward secrecy OPK
+  5. F   = Uint8Array(32).fill(0xFF) // Signal spec domain separator
+     IKM = concat(F, DH1, DH2, DH3, DH4) // 160 bytes
+  6. SK = hkdf(IKM) // HKDF-SHA256, salt=0×32, info="E2EEChat_v1"
+  7. DH1.fill(0); DH2.fill(0); DH3.fill(0); DH4.fill(0)
+     IK_priv.fill(0); EK.privateKey.fill(0)  // Forward Secrecy
 ```
 
-#### `hkdf(ikm)` (private)
+### `performX3DH_receiver(myKeys, initMsg) → {SK}`
+
 ```
-Input:  ikm: Uint8Array (160B — 32+32+32+32+32)
-Output: CryptoKey (AES-256-GCM, 256-bit, extractable: true)
+Input:
+  myKeys = {
+    IK_secret: Uint8Array(64),  // Ed25519 secret của Bob
+    SPK_priv:  Uint8Array(32),  // X25519 private của Bob
+    OPK_priv:  Uint8Array(32),  // đã load từ IndexedDB trước khi gọi
+  }
+  initMsg = {
+    ikPub: string (base64),  // IK_pub của Alice (từ WS message)
+    ekPub: string (base64),  // EK_pub của Alice (từ WS message)
+  }
 
-Dùng: Web Crypto API HKDF-SHA256
-  salt = Uint8Array(32).fill(0)    ← theo Signal spec
-  info = "E2EEChat_v1"             ← domain separation string
+4 phép DH ngược — cho ra cùng SK với sender:
+  DH1 = crypto_scalarmult(SPK_priv,  IK_pub_A_x)  // = Alice DH1
+  DH2 = crypto_scalarmult(IK_priv,   EK_pub_A)    // = Alice DH2
+  DH3 = crypto_scalarmult(SPK_priv,  EK_pub_A)    // = Alice DH3
+  DH4 = crypto_scalarmult(OPK_priv,  EK_pub_A)    // = Alice DH4
 
-Tại sao extractable: true?
-  CryptoKey non-extractable không thể exportKey() → không lưu IndexedDB được
-  extractable: true → exportKey('raw') → wrap → lưu
-  Rủi ro nhỏ vì SK chỉ nằm trong RAM, không expose ra ngoài nếu không có XSS
+Sau DH4: OPK_priv.fill(0) — OPK đã dùng xong, không bao giờ dùng lại
 ```
 
 ---
 
-### Module `aesGcm.js`
+## Module `crypto/aesGcm.js`
 
-**Mục đích:** Mã hóa/giải mã tin nhắn và file bằng AES-256-GCM.
+### `encryptMessage(plaintext, SK, convId, senderId) → {ciphertext, iv, aad}`
 
-#### `encryptMessage(plaintext, SK, conversationId, senderId)`
 ```
 Input:
-  plaintext:      string           — tin nhắn chưa mã hóa
-  SK:             CryptoKey        — AES-256-GCM session key
-  conversationId: string (UUID)
-  senderId:       string (UUID)
+  plaintext: string
+  SK:        CryptoKey (AES-256-GCM)
+  convId:    string (UUID)
+  senderId:  string (UUID)
 
-Output: { ciphertext: base64, iv: base64, aad: string }
+Output:
+  ciphertext: base64 string
+  iv:         base64 string (12B random)
+  aad:        string (plaintext, không mã hóa)
 
-Chi tiết:
-  iv  = crypto.getRandomValues(Uint8Array(12))  ← 96-bit, phải random mỗi tin
-  aad = `${conversationId}:${senderId}`         ← authenticated but NOT encrypted
-  ciphertext = AES-256-GCM.encrypt(plaintext_utf8, SK, iv, aad)
+Bên trong:
+  iv  = crypto.getRandomValues(Uint8Array(12))
+  aad = `${convId}:${senderId}`
+  ciphertext = AES-256-GCM.encrypt(UTF8(plaintext), SK, iv, UTF8(aad))
+  return { ciphertext: toBase64(ciphertext), iv: toBase64(iv), aad }
 
-Nếu bỏ aad:
-  Attacker lấy ciphertext từ conv A, gửi vào conv B
-  Bob giải mã thành công → đọc được tin Alice gửi trong conv khác
-  Với AAD, auth tag fail → decrypt trả null → "Không thể giải mã"
+Tại sao IV random mỗi tin?
+  AES-GCM với cùng key + cùng IV → keystream giống nhau
+  XOR 2 ciphertext = XOR 2 plaintext → lộ thông tin
 
-Nếu dùng IV cố định:
-  AES-GCM security model sụp đổ khi IV trùng nhau → 
-  kẻ tấn công có thể XOR 2 ciphertext để loại bỏ keystream
+Tại sao cần AAD?
+  AAD được xác thực nhưng không mã hóa
+  Nếu bỏ: attacker lấy ciphertext tin A, replay vào conv B → Bob đọc được
+  Với AAD="{convId}:{senderId}": auth tag sai → decrypt fail → null
 ```
 
-#### `decryptMessage(ciphertextB64, ivB64, aad, SK)`
+### `decryptMessage(ctB64, ivB64, aad, SK) → string | null`
+
 ```
-Output: string | null
-
-Trả null khi:
-  - SK sai (khác session)
-  - IV sai
-  - AAD bị sửa
-  - ciphertext bị tamper (auth tag fail)
-
+Return null khi: SK sai, IV sai, AAD thay đổi, ciphertext bị sửa
 Không throw → UI hiển thị "[Không thể giải mã]" thay vì crash
 ```
 
 ---
 
-### Module `fingerprint.js`
+## Module `db/storage.js`
 
-#### `generateFingerprint(IK_pub_A, IK_pub_B)`
-```
-Input:  2 Uint8Array(32) — thứ tự không quan trọng
-Output: string (60 chữ số decimal)
-
-Bước 1: lexCompare → sort canonical
-  Alice gọi (IK_A, IK_B), Bob gọi (IK_B, IK_A) → cùng ra kết quả
-
-Bước 2: concat 64 bytes → hash SHA-512 × 5200 vòng
-  5200 vòng: brute-force 1 cặp key giả = 5200 lần hash SHA-512
-  Thử 1M cặp key = 5.2 tỷ lần hash ≈ không khả thi trong thực tế
-
-Bước 3: BigInt(hex) % 10^60 → 60 chữ số decimal
-  Dễ đọc và so sánh hơn hex
-  60 chữ số = 10^60 khả năng → 200 bits entropy
+**Dexie schema:**
+```javascript
+db.version(1).stores({
+  privateKeys: 'userId',  // PK = userId
+  sessions:    'conversationId',  // PK = conversationId
+})
 ```
 
----
+### `savePrivateKeys(userId, wrapSalt, wrappingKey, IK_secret, SPK_priv, opkList)`
 
-### Module `storage.js`
-
-**Dexie.js** — wrapper cho IndexedDB API.
-
-**Tại sao không dùng localStorage?**
-- localStorage: synchronous, limit 5MB, lưu string plaintext
-- IndexedDB: asynchronous (không block UI), limit vài GB, lưu binary (Uint8Array)
-- Private key là 64 bytes binary → IndexedDB phù hợp hơn
-
-**Schema:**
 ```
-privateKeys: { userId (PK), wrapSalt, wrappedIK, ivIK, wrappedSPK, ivSPK, wrappedOPKs[] }
-sessions:    { conversationId (PK), wrappedSK, ivSK }
-```
-
-#### `savePrivateKeys(userId, wrapSalt, wrappingKey, IK_secret, SPK_priv, opkList)`
-```
-Tại sao không lưu wrappingKey vào DB?
-  wrappingKey derive từ password — nếu lưu DB, mất ý nghĩa của password
-  wrappingKey phải derive lại từ password mỗi lần login → đảm bảo chỉ ai biết password mới dùng được
+Lưu vào table privateKeys:
+{
+  userId,
+  wrapSalt: toBase64(wrapSalt),    // 16B random, cần để re-derive wrappingKey
+  wrappedIK, ivIK,                 // IK_secret sau AES-GCM
+  wrappedSPK, ivSPK,               // SPK_priv sau AES-GCM
+  wrappedOPKs: [{id, wrapped, iv}] // 100 OPK, mỗi cái IV riêng
+}
 
 Tại sao lưu wrapSalt?
-  PBKDF2 cần cùng salt để ra cùng wrappingKey
-  Salt là random → phải lưu lại để login lần sau
-  Salt không cần bí mật (không phải password)
+  Login lần sau: cần cùng salt để PBKDF2 ra cùng wrappingKey
+  wrappingKey KHÔNG lưu (phải derive lại từ password mỗi lần login)
 ```
 
-#### `getOPK(userId, opkId, wrappingKey)`
+### `getOPK(userId, opkId, wrappingKey) → Uint8Array | null`
+
 ```
-Tại sao không dùng loadPrivateKeys() cho receiver?
-  loadPrivateKeys() unwrap 100 OPK → 100 lần AES-GCM decrypt
-  getOPK() chỉ unwrap 1 OPK theo opkId → 100× nhanh hơn
-```
-
----
-
-### Module `handler.js` (Backend WebSocket)
-
-#### `clients: Map<userId, WebSocket>`
-```
-In-memory Map — sống trong RAM của Node.js process
-Không phải database, không phải Redis
-Chỉ tồn tại khi server đang chạy
-
-Tại sao không dùng Redis?
-  1 server instance → Map trong RAM là đủ, đơn giản hơn nhiều
-  Redis Pub/Sub cần khi scale ngang nhiều instance
-  Đồ án scope 1 instance → không cần
-
-Hạn chế: nếu server restart → Map mất → tất cả client phải reconnect
-  WebSocket client có auto-reconnect → tự động giải quyết
+Chỉ unwrap 1 OPK theo id — nhanh hơn loadPrivateKeys() ~100 lần
+Dùng trong X3DH receiver thay vì load all 100 OPK
 ```
 
-#### `onConnect(ws, req)` — 8 bước
-```
-1. Lấy token từ query string (?token=JWT)
-   Tại sao query string thay vì header?
-   WebSocket API browser không hỗ trợ custom header trong handshake
-   Query string là cách duy nhất browser có thể gửi token qua WS
+### `saveSession(conversationId, SK, wrappingKey)`
 
-2. jwt.verify(token) — xác thực chữ ký + hạn
-3. redis.get("blocklist:"+token) — check xem đã logout chưa
-4. Đóng socket cũ nếu user mở tab mới (single-session policy)
-5. clients.set(userId, ws)
-6. Gửi danh sách online users
-7. Broadcast "userId vừa online"
-8. Đăng ký ws.on('message') và ws.on('close')
+```
+SK là CryptoKey → exportKey('raw') → rawSK → wrapPrivateKey(rawSK, wrappingKey)
+rawSK.fill(0) ngay sau khi wrap → không để raw key trong RAM
 ```
 
 ---
 
-### Middleware `auth.js` (Backend)
+## Module `AuthContext.jsx`
 
-#### `requireAuth(req, res, next)`
+**State và ý nghĩa:**
+
+| State | Lưu ở đâu | Mất khi nào |
+|---|---|---|
+| `token` | `localStorage` + React state | Logout hoặc xóa localStorage |
+| `userId` | `localStorage` + React state | Logout hoặc xóa localStorage |
+| `username` | `localStorage` + React state | Logout hoặc xóa localStorage |
+| `wrappingKey` | RAM (React state) | Reload trang |
+| `IK_secret` | RAM (React state) | Reload trang |
+| `IK_pub` | RAM (React state) | Reload trang |
+| `SPK_priv` | RAM (React state) | Reload trang |
+
+**`isAuthenticated = token !== null`**  
+**`isLocked = isAuthenticated && wrappingKey === null`**  
+→ `isLocked = true` sau reload: localStorage có token nhưng RAM mất wrappingKey → UnlockModal
+
+---
+
+## Module `useWebSocket.js`
+
+### Stale Closure Problem và Giải Pháp
+
+```javascript
+// VẤN ĐỀ: handler đăng ký lúc effect chạy "đóng băng" giá trị
+// Nếu wrappingKey thay đổi sau đó, handler vẫn dùng wrappingKey cũ
+
+// GIẢI PHÁP: dùng Ref thay vì state trực tiếp trong handler
+const wrappingKeyRef = useRef(wrappingKey);
+const IK_secretRef   = useRef(IK_secret);
+
+// Sync Ref theo state
+useEffect(() => { wrappingKeyRef.current = wrappingKey; }, [wrappingKey]);
+useEffect(() => { IK_secretRef.current   = IK_secret;   }, [IK_secret]);
+
+// Handler đọc từ Ref → luôn có giá trị mới nhất
+async function handleIncoming(msg) {
+  const wKey = wrappingKeyRef.current;  // không bao giờ stale
+}
 ```
-1. Lấy Authorization header → Bearer {token}
-   Tại sao Bearer scheme? Chuẩn OAuth 2.0 RFC 6750
 
-2. jwt.verify(token, process.env.JWT_SECRET)
-   JWT_SECRET = 256-bit random string
-   Nếu sai secret hoặc hết hạn → throw → 401
+### `handleIncoming(msg)` — Logic nhận tin
 
-3. redis.get("blocklist:"+token)
-   Nếu Redis down → bỏ qua check (graceful degradation)
-   Trade-off: nếu Redis down, logout không có tác dụng trong thời gian ngắn
-   Chấp nhận được vì Redis thường không down lâu
-
-4. req.user = decoded → { userId, username, iat, exp }
-   next() → đến route handler
-
-Tại sao JWT thay vì Session?
-  Stateless: server không cần lưu session state
-  Phù hợp với REST API
-  Có thể verify mà không cần DB lookup (chỉ cần verify signature)
 ```
+1. SK = sessionKeysRef.current.get(msg.conversationId)  // RAM cache
+
+2. Nếu không có SK:
+   a. msg có ekPub + opkId + ikPub → X3DH init message:
+      - getOPK(userId, msg.opkId, wrappingKey)
+      - performX3DH_receiver({IK_secret, SPK_priv, OPK_priv}, msg)
+      - saveSession(convId, SK, wrappingKey)
+      - deleteOPK(userId, msg.opkId)
+   b. Không có ekPub → load từ IndexedDB:
+      - loadSession(convId, wrappingKey)
+
+3. Nếu vẫn không có SK → hiển thị decryptError: true
+
+4. decryptMessage(msg.ciphertext, msg.iv, msg.aad, SK) → plaintext
+```
+
+---
+
+## Backend: `ws/handler.js`
+
+### `clients: Map<userId, WebSocket>`
+
+```
+In-memory Map — sống trong RAM Node.js process
+Mất khi server restart → client auto-reconnect (socket.js có reconnect logic)
+Không dùng Redis vì chỉ có 1 server instance
+
+Single-session policy (dòng 60-65 handler.js):
+  Khi user mở tab mới → WS connect mới → server đóng WS cũ
+  Gửi {type:'session_replaced'} cho WS cũ trước khi đóng
+  Tránh: 2 WS cùng userId → tin đến 1 trong 2 ngẫu nhiên
+```
+
+### `onConnect(ws, req)` — JWT từ query string
+
+```
+Token lấy từ: req.url.split('?token=')[1]
+Tại sao query string, không phải header?
+  WebSocket browser API không hỗ trợ custom header trong handshake
+  Query string là cách duy nhất browser gửi token qua WS upgrade
+```
+
+---
+
+## Backend: `routes/auth.js` (POST /auth/login)
+
+### Timing Attack Protection
+
+```javascript
+const DUMMY_HASH = '$2b$12$invalidhashfortimingatk';
+const isValid = await bcrypt.compare(password, user?.passwordHash ?? DUMMY_HASH);
+```
+
+Nếu user không tồn tại và return sớm → response nhanh hơn → attacker đoán được username.  
+Dùng `DUMMY_HASH`: dù user không tồn tại, vẫn tốn ~250ms để bcrypt.compare.  
+Cả 2 case đều trả cùng message: "Tên đăng nhập hoặc mật khẩu không đúng"
