@@ -27,6 +27,7 @@ router.get('/', requireAuth, async (req, res) => {
           mode: 'insensitive',     // không phân biệt hoa thường
         },
         NOT: { id: req.user.userId }, // loại bỏ chính mình
+        isActive: true,               // ẩn user đã bị vô hiệu hóa
       },
       select: {
         id: true,

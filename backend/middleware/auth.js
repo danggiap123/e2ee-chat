@@ -1,5 +1,8 @@
 const jwt = require('jsonwebtoken');
 const redis = require('../redis');
+const { PrismaClient } = require('@prisma/client');
+
+const prisma = new PrismaClient();
 
 async function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -9,7 +12,6 @@ async function requireAuth(req, res, next) {
   }
 
   const token = authHeader.split(' ')[1];
-
 
   // Xác minh token và lấy payload
   let decoded;
@@ -26,6 +28,15 @@ async function requireAuth(req, res, next) {
   } catch {
     // Redis down → bỏ qua check blocklist, vẫn cho qua
     console.error('Redis down, skipping blocklist check');
+  }
+
+  // Kiểm tra tài khoản có bị vô hiệu hóa không
+  const user = await prisma.user.findUnique({
+    where: { id: decoded.userId },
+    select: { isActive: true },
+  });
+  if (!user || !user.isActive) {
+    return res.status(401).json({ error: 'Tài khoản đã bị vô hiệu hóa' });
   }
 
   req.user = decoded; // gắn payload vào request để các route sau dùng

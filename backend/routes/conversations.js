@@ -78,13 +78,13 @@ router.get('/', requireAuth, async (req, res) => {
         createdAt: true,
         userA: {
           select: {
-            id: true, username: true,
+            id: true, username: true, isActive: true,
             keyBundle: { select: { ikPub: true } },
           },
         },
         userB: {
           select: {
-            id: true, username: true,
+            id: true, username: true, isActive: true,
             keyBundle: { select: { ikPub: true } },
           },
         },
@@ -106,6 +106,7 @@ router.get('/', requireAuth, async (req, res) => {
         peer: {
           id: peer.id,
           username: peer.username,
+          isActive: peer.isActive,
           ikPub: peer.keyBundle?.ikPub ?? null, // Ed25519 public key — dùng để tính fingerprint
         },
         fingerprintVerified: conv.fingerprintVerified,

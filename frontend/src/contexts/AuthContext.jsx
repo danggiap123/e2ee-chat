@@ -17,6 +17,7 @@ export function AuthProvider({ children }) {
   const [token,    setToken]    = useState(() => localStorage.getItem('token'));
   const [userId,   setUserId]   = useState(() => localStorage.getItem('userId'));
   const [username, setUsername] = useState(() => localStorage.getItem('username'));
+  const [role,     setRole]     = useState(() => localStorage.getItem('role') ?? 'USER');
 
   // ── RAM state (mất khi reload — đúng với thiết kế E2EE) ─────────────────────
   const [wrappingKey, setWrappingKey] = useState(null);
@@ -60,7 +61,7 @@ export function AuthProvider({ children }) {
     await sodium.ready;
 
     // 1. Xác thực với server → nhận JWT
-    const { token: t, userId: uid, username: uname } = await api.login(usernameInput, password);
+    const { token: t, userId: uid, username: uname, role: r } = await api.login(usernameInput, password);
 
     // 2. Kiểm tra thiết bị có key không
     // false = user đổi máy hoặc xóa browser data → không thể decrypt
@@ -100,9 +101,11 @@ export function AuthProvider({ children }) {
     localStorage.setItem('token',    t);
     localStorage.setItem('userId',   uid);
     localStorage.setItem('username', uname);
+    localStorage.setItem('role',     r ?? 'USER');
     setToken(t);
     setUserId(uid);
     setUsername(uname);
+    setRole(r ?? 'USER');
 
     // 7. Đưa keys vào RAM — mất khi reload (đúng với thiết kế)
     setWrappingKey(wKey);
@@ -141,12 +144,14 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('token');
     localStorage.removeItem('userId');
     localStorage.removeItem('username');
+    localStorage.removeItem('role');
 
     // 3. Clear toàn bộ state — wrappingKey và key material xóa khỏi RAM
     // KHÔNG xóa IndexedDB — wrapped keys vẫn còn, login lại vẫn dùng được
     setToken(null);
     setUserId(null);
     setUsername(null);
+    setRole('USER');
     setWrappingKey(null);
     setIKSecret(null);
     setIKPub(null);
@@ -155,7 +160,7 @@ export function AuthProvider({ children }) {
 
   const value = {
     // identity
-    token, userId, username,
+    token, userId, username, role,
     // crypto material (RAM only)
     wrappingKey, IK_secret, IK_pub, SPK_priv,
     // derived

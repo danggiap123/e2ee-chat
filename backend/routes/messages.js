@@ -42,6 +42,20 @@ async function handleDirectMessage(req, res) {
       return res.status(403).json({ error: 'Bạn không phải thành viên của conversation này' });
     }
 
+    // Kiểm tra người nhận có còn active không
+    const receiverId = conversation.participantA === req.user.userId
+      ? conversation.participantB
+      : conversation.participantA;
+
+    const recipient = await prisma.user.findUnique({
+      where: { id: receiverId },
+      select: { isActive: true },
+    });
+
+    if (!recipient?.isActive) {
+      return res.status(403).json({ error: 'Người dùng này đã không còn trong tổ chức' });
+    }
+
     const message = await prisma.message.create({
       data: {
         conversationId,
@@ -54,10 +68,6 @@ async function handleDirectMessage(req, res) {
         ikPub: ikPub ?? null,
       },
     });
-
-    const receiverId = conversation.participantA === req.user.userId
-      ? conversation.participantB
-      : conversation.participantA;
 
     const receiverSocket = clients.get(receiverId);
     if (receiverSocket && receiverSocket.readyState === WebSocket.OPEN) {

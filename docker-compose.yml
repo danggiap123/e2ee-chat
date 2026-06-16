@@ -36,6 +36,7 @@ services:
       JWT_SECRET: 480c8bfd082587b158fcbbb5cf18226e8251c1456ad4cfcdc8c910d9734ee7d4
       PORT: 3000
       ALLOWED_ORIGINS: http://localhost
+      ADMIN_SEED_EMAIL: it@company.com
     volumes:
       - uploads_data:/app/uploads
     depends_on:

@@ -1,6 +1,6 @@
 # Tiến độ dự án E2EE Chat
 
-## Cập nhật lần cuối: 08/06/2026 (session 25)
+## Cập nhật lần cuối: 16/06/2026 (session 27)
 
 ## Tổng quan 6 tuần
 | Tuần | Mục tiêu | Trạng thái |
@@ -407,7 +407,7 @@
 **Quyết định kỹ thuật session 21–23:**
 - SK group cache key = `${groupId}:${recipientId}` (sender) / `${groupId}:${senderId}` (receiver) — tách biệt hoàn toàn với SK 1-1
 - AAD group message = `${groupId}:${senderId}` — chống tamper, nhất quán giữa sender và receiver
-- Group không cần fingerprint — đơn giản hóa UX, phù hợp scope đồ án
+- Group fingerprint → triển khai ở session 26 (PeerVerification global)
 - `prisma migrate dev` chạy trên máy local (có terminal tương tác) → `prisma migrate deploy` trong Docker container
 - Rebuild container khi sửa code: `docker compose up --build -d <service>`
 
@@ -448,6 +448,108 @@
 - **Group file**: sinh random 256-bit fileKey → mã hóa file 1 lần → fileKey bọc trong message payload của từng người (mã hóa bằng SK riêng) → server chỉ lưu 1 bản ciphertext, không tốn băng thông N×
 - File format message payload: `JSON.stringify({ type, fileId, fileName, mimeType, fileSize, fileIv, fileKey? })` → mã hóa như tin nhắn thường → backward-compatible
 - **Blind Server**: server chỉ thấy encrypted bytes, không biết loại file hay nội dung
+
+---
+
+---
+
+**Session 26 (16/06/2026) — Fingerprint xác minh cho Group Chat**
+
+**Thiết kế:**
+- Không block chat như 1-1 — group vẫn gửi được kể cả chưa verify ai (giống Signal)
+- Verification là toàn cục (global): verify Bob 1 lần → xanh ở mọi nhóm có Bob, không cần verify lại
+- Insight: fingerprint = SHA-512 × 5200 lần trên (IK_A, IK_B) — giá trị không đổi dù context là 1-1 hay group
+
+**Backend:**
+- ✅ `prisma/schema.prisma` — thêm model `PeerVerification` (verifierId, peerId, verifiedAt, @@unique([verifierId, peerId])); thêm 2 relation `verificationsGiven` + `verificationsReceived` vào `User`
+- ✅ Migration `20260616032157_add_peer_verification` — apply thành công
+- ✅ `backend/routes/peers.js` — **mới**: `PATCH /peers/:peerId/verify` (idempotent upsert, check self-verify, check user tồn tại)
+- ✅ `backend/server.js` — mount `/peers` route
+- ✅ `backend/routes/groups.js` — `GET /groups/:groupId/members`: thêm join `PeerVerification` để trả `isVerifiedByMe` (null với chính mình, true/false với người khác)
+- ✅ `backend/routes/conversations.js` — `PATCH /conversations/:convId/fingerprint`: dùng `$transaction` ghi đồng thời vào cả `Conversation.fingerprintVerified` và `PeerVerification` — đảm bảo verify 1-1 được nhận diện ở group
+- ✅ `backend/scripts/backfill-peer-verification.js` — script backfill dữ liệu verify 1-1 cũ sang `PeerVerification` (2 chiều A→B và B→A), xử lý 3 conversation → 6 bản ghi
+
+**Frontend:**
+- ✅ `frontend/src/services/api.js` — thêm `verifyPeer(token, peerId)` → `PATCH /peers/:peerId/verify`
+- ✅ `frontend/src/components/FingerprintModal.jsx` — refactor: bỏ prop `(token, conversationId)`, thay bằng `onConfirm: async () => void` — modal không còn biết gọi API nào, caller tự quyết; tái sử dụng được cho cả 1-1 và group
+- ✅ `frontend/src/pages/Chat.jsx`:
+  - `handleSelectGroup` → gọi `api.getGroupMembers` ngay khi chọn nhóm để load `ikPub` + `isVerifiedByMe`
+  - Header badge group: `"E2EE · X/Y đã xác minh"` (amber, click → mở GroupInfoPanel) hoặc `"Tất cả đã xác minh"` (green) — tính từ `activeGroup.members`
+  - `FingerprintModal` 1-1 truyền `onConfirm={() => api.verifyFingerprint(token, activeConvId)}`
+  - Thêm `handlePanelMemberVerified(peerId)` — cập nhật `isVerifiedByMe: true` trong `activeGroup.members`
+  - Truyền `myIKPub` + `onMemberVerified` sang `GroupInfoPanel`
+- ✅ `frontend/src/components/GroupInfoPanel.jsx`:
+  - Import `FingerprintModal`
+  - Thêm state `fingerprintTarget` — member đang mở modal
+  - Mỗi member (trừ bản thân) có shield icon: xanh lá (đã verify) / xám (chưa verify, click được) / xám nhạt disabled (chưa upload key)
+  - Click shield → mở `FingerprintModal` với `onConfirm={() => api.verifyPeer(token, member.id)}`
+  - Sau verify → `onMemberVerified(peerId)` → shield chuyển xanh, badge header cập nhật
+
+**Luồng UX hoàn chỉnh:**
+1. Chọn nhóm → badge header hiện "E2EE · X/Y đã xác minh"
+2. Click badge (nếu chưa đủ) → mở GroupInfoPanel, thấy shield icon từng người
+3. Click shield xám của member → FingerprintModal mở, tính 60 số (~300ms)
+4. Gọi điện/gặp trực tiếp so sánh → "Khớp rồi, xác nhận" → `PATCH /peers/:peerId/verify`
+5. Shield chuyển xanh, badge header cập nhật đếm
+6. Verify nhóm A xong → vào nhóm B có cùng người → tự động xanh
+
+**Thảo luận kỹ thuật:**
+- Giải thích cơ chế bảo mật: E2EE bảo vệ được 99% mối đe dọa (nghe lén, rò rỉ DB) kể cả không verify. Fingerprint chỉ bảo vệ thêm MITM chủ động (server thay public key giả) — rủi ro rất thấp với hệ thống nội bộ doanh nghiệp tự vận hành
+- So sánh với Signal: Signal cũng không block chat khi chưa verify (Safety Numbers tự nguyện). Dự án này ở 1-1 còn nghiêm hơn Signal (bắt verify trước). Group thì tương đương Signal
+
+---
+
+---
+
+**Session 27 (16/06/2026) — Trang Admin quản lý người dùng**
+
+**Thiết kế & quyết định kiến trúc:**
+- Chọn Role-based admin (Loại 1) thay vì shared secret — trực quan hơn, admin là user thực trong hệ thống
+- `ADMIN_SEED_EMAIL` trong `docker-compose.yml` phá vỡ chicken-and-egg: email này bypass whitelist và tự động được gán `ADMIN` khi đăng ký
+- Không có tính năng xóa user (hard delete) — chỉ vô hiệu hóa (soft delete) để giữ lịch sử chat của người khác
+- User bị disable: ẩn khỏi search, không đăng nhập được, người khác không gửi tin được, conversation cũ vẫn đọc được (ciphertext vẫn giải mã được vì người nhận đã có SK)
+- Race condition 2 admin thu hồi quyền nhau đồng thời → giải quyết bằng `FOR UPDATE` row lock trong PostgreSQL transaction
+
+**Backend:**
+- ✅ `prisma/schema.prisma` — thêm `isActive Boolean @default(true)` vào `User`
+- ✅ Migration `20260616085933_add_user_is_active` — apply thành công
+- ✅ `prisma/schema.prisma` — thêm `enum Role { USER ADMIN }` + field `role Role @default(USER)` vào `User`
+- ✅ Migration `20260616093350_add_user_role` — apply thành công
+- ✅ `backend/middleware/auth.js` — thêm check `isActive` sau verify JWT, trả 401 nếu bị vô hiệu hóa; thêm Prisma instance riêng
+- ✅ `backend/routes/auth.js` — `POST /auth/register`: nếu email = `ADMIN_SEED_EMAIL` thì bypass whitelist + gán `role: ADMIN`; `POST /auth/login`: check `isActive` + gắn `role` vào JWT + trả `role` trong response
+- ✅ `backend/routes/users.js` — `GET /users`: thêm `isActive: true` filter, ẩn user đã bị disable khỏi search
+- ✅ `backend/routes/messages.js` — `POST /messages` (1-1): kiểm tra recipient còn `isActive` trước khi lưu tin, trả 403 nếu không
+- ✅ `backend/routes/conversations.js` — `GET /conversations`: thêm `isActive` vào select của `userA`/`userB`, trả về `peer.isActive`
+- ✅ `backend/routes/admin.js` — **mới**: bảo vệ bằng JWT middleware (`role === ADMIN`), 7 endpoint:
+  - `GET /admin/users` — danh sách tất cả user kèm role + trạng thái
+  - `PATCH /admin/users/:id/disable` — vô hiệu hóa (chặn tự disable chính mình)
+  - `PATCH /admin/users/:id/enable` — kích hoạt lại
+  - `PATCH /admin/users/:id/grant-admin` — cấp quyền ADMIN
+  - `PATCH /admin/users/:id/revoke-admin` — thu hồi quyền ADMIN với `FOR UPDATE` lock (chặn tự thu hồi, chặn revoke admin cuối cùng)
+  - `GET /admin/whitelist` — danh sách email whitelist
+  - `POST /admin/whitelist` — thêm email
+  - `DELETE /admin/whitelist/:id` — xóa email
+- ✅ `backend/server.js` — mount `/admin` route
+- ✅ `backend/.env` — thêm `ADMIN_SEED_EMAIL`
+- ✅ `docker-compose.yml` — thêm `ADMIN_SEED_EMAIL` vào environment backend, bỏ `ADMIN_SECRET`
+- ✅ `backend/scripts/add-employee.js` — giữ lại làm CLI backup, không xóa
+
+**Frontend:**
+- ✅ `frontend/src/contexts/AuthContext.jsx` — thêm `role` state (localStorage), lưu/xóa khi login/logout, export ra context value
+- ✅ `frontend/src/App.jsx` — thêm `AdminRoute` guard (chưa đăng nhập → `/login`, không phải ADMIN → `/chat`); thêm route `/admin`
+- ✅ `frontend/src/pages/Admin.jsx` — **mới**: trang admin 2 tab:
+  - Tab "Người dùng": bảng user kèm badge role + trạng thái, nút vô hiệu hóa/kích hoạt, nút cấp/thu hồi Admin (không tự thao tác với mình)
+  - Tab "Whitelist Email": form thêm email, danh sách có nút xóa, hiển thị ngày dùng
+  - Dùng JWT từ `AuthContext` thay vì màn hình nhập secret riêng
+  - Nút "Vào Chat" điều hướng SPA sang `/chat`
+- ✅ `frontend/src/components/ChatSidebar.jsx` — thêm prop `role`, thêm icon bánh răng ⚙ trong header (chỉ admin thấy) → navigate SPA sang `/admin` không reload, tránh mất `wrappingKey` khỏi RAM
+- ✅ `frontend/src/pages/Chat.jsx` — đọc `role` từ `useAuth()`, truyền xuống `ChatSidebar`
+- ✅ `frontend/src/pages/Chat.jsx` — hiện banner "Người dùng này đã không còn trong tổ chức" thay thế `MessageInput` khi `peer.isActive === false`
+
+**Quyết định kỹ thuật session 27:**
+- Admin trang `/admin` truy cập qua icon bánh răng trong sidebar (SPA navigation) → `wrappingKey` vẫn còn trong RAM → quay lại `/chat` không cần nhập lại mật khẩu. Gõ thẳng URL `/admin` (reload) sẽ mất `wrappingKey` → cần unlock khi vào `/chat` — đây là đúng về bảo mật E2EE
+- Race condition khi 2 admin thu hồi quyền nhau: giải quyết bằng `prisma.$transaction` + `SELECT COUNT(*) FOR UPDATE` → PostgreSQL lock row, request thứ 2 phải chờ, đọc lại count sau khi thứ 1 commit → thấy count = 1 → bị từ chối
+- `ADMIN_SEED_EMAIL` chỉ có tác dụng 1 lần duy nhất khi đăng ký, sau đó vô hiệu (email đó đã tồn tại trong DB)
 
 ---
 

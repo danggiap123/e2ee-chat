@@ -15,7 +15,7 @@ import ConfirmModal from '../components/ConfirmModal.jsx';
 import GroupInfoPanel from '../components/GroupInfoPanel.jsx';
 
 export default function Chat() {
-  const { token, userId, username, IK_secret, IK_pub, wrappingKey, logout } = useAuth();
+  const { token, userId, username, role, IK_secret, IK_pub, wrappingKey, logout } = useAuth();
 
   // ─── State 1-1 ───────────────────────────────────────────────────────────────
   const [conversations,   setConversations]   = useState([]);
@@ -615,6 +615,7 @@ export default function Chat() {
         token={token}
         isConnected={isConnected}
         onLogout={logout}
+        role={role}
       />
 
       <div className="flex-1 flex flex-col min-w-0">
@@ -669,10 +670,16 @@ export default function Chat() {
               peers={peersMap} onDeleteMessage={handleDeleteMessage} onReply={setReplyTo}
               onDownloadFile={handleDownloadFile}
             />
-            <MessageInput
-              onSend={handleSend} onSendFile={handleSendFile} isSending={isSending}
-              disabled={!isVerified} replyTo={replyTo} onCancelReply={() => setReplyTo(null)}
-            />
+            {activePeer?.isActive === false ? (
+              <div className="px-4 py-3 bg-gray-100 border-t text-center text-sm text-gray-500">
+                Người dùng này đã không còn trong tổ chức. Không thể gửi tin nhắn mới.
+              </div>
+            ) : (
+              <MessageInput
+                onSend={handleSend} onSendFile={handleSendFile} isSending={isSending}
+                disabled={!isVerified} replyTo={replyTo} onCancelReply={() => setReplyTo(null)}
+              />
+            )}
           </>
         )}
 

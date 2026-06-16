@@ -43,16 +43,6 @@ router.post('/register', registerLimiter, async (req, res) => {
       return res.status(400).json({ error: 'Password phải có ít nhất 8 ký tự' });
     }
 
-    // Kiểm tra whitelist và tạo user trong 1 transaction —
-    // đảm bảo không có race condition giữa lúc check và lúc update usedAt
-    const allowed = await prisma.allowedEmail.findUnique({ where: { email } });
-    if (!allowed) {
-      return res.status(403).json({ error: 'Email này không được phép đăng ký' });
-    }
-    if (allowed.usedAt !== null) {
-      return res.status(409).json({ error: 'Email này đã được sử dụng để đăng ký tài khoản' });
-    }
-
     const existingByUsername = await prisma.user.findUnique({ where: { username } });
     if (existingByUsername) {
       return res.status(409).json({ error: 'Username đã tồn tại' });
@@ -65,16 +55,42 @@ router.post('/register', registerLimiter, async (req, res) => {
 
     const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
-    const newUser = await prisma.$transaction(async (tx) => {
-      const user = await tx.user.create({
-        data: { username, email, passwordHash: hash },
+    // ADMIN_SEED_EMAIL: email đặc biệt do IT set trong docker-compose.yml —
+    // bypass whitelist và tự động được gán role ADMIN khi đăng ký lần đầu.
+    // Mục đích: phá vỡ chicken-and-egg (chưa có admin nào để thêm whitelist).
+    const seedEmail = process.env.ADMIN_SEED_EMAIL?.toLowerCase().trim();
+    const isAdminSeed = seedEmail && email.toLowerCase().trim() === seedEmail;
+
+    let newUser;
+
+    if (isAdminSeed) {
+      // Tạo thẳng không qua whitelist, gán role ADMIN
+      newUser = await prisma.user.create({
+        data: { username, email, passwordHash: hash, role: 'ADMIN' },
       });
-      await tx.allowedEmail.update({
-        where: { email },
-        data: { usedAt: new Date() },
+    } else {
+      // Luồng thông thường: phải có trong whitelist
+      const allowed = await prisma.allowedEmail.findUnique({ where: { email } });
+      if (!allowed) {
+        return res.status(403).json({ error: 'Email này không được phép đăng ký' });
+      }
+      if (allowed.usedAt !== null) {
+        return res.status(409).json({ error: 'Email này đã được sử dụng để đăng ký tài khoản' });
+      }
+
+      // Tạo user + đánh dấu email đã dùng trong 1 transaction —
+      // tránh race condition giữa lúc check và lúc update usedAt
+      newUser = await prisma.$transaction(async (tx) => {
+        const user = await tx.user.create({
+          data: { username, email, passwordHash: hash },
+        });
+        await tx.allowedEmail.update({
+          where: { email },
+          data: { usedAt: new Date() },
+        });
+        return user;
       });
-      return user;
-    });
+    }
 
     return res.status(201).json({ message: 'Đăng ký thành công, vui lòng đăng nhập', userId: newUser.id });
   } catch (err) {
@@ -102,13 +118,19 @@ router.post('/login', loginLimiter, async (req, res) => {
       return res.status(401).json({ error: 'Sai username hoặc password' });
     }
 
+    if (!user.isActive) {
+      return res.status(401).json({ error: 'Tài khoản đã bị vô hiệu hóa' });
+    }
+
+    // Gắn role vào JWT để backend và frontend đều biết quyền của user
+    // mà không cần query DB thêm lần nào
     const token = jwt.sign(
-      { userId: user.id, username: user.username },
+      { userId: user.id, username: user.username, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: '1d' }
     );
 
-    return res.json({ token, userId: user.id, username: user.username });//username trong payload JWT để client hiển thị mà không cần gọi API
+    return res.json({ token, userId: user.id, username: user.username, role: user.role });
   } catch (err) {
     console.error('[POST /login]', err);
     return res.status(500).json({ error: 'Lỗi server khi đăng nhập' });

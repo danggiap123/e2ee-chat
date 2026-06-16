@@ -3,7 +3,18 @@ import { AuthProvider, useAuth } from './contexts/AuthContext.jsx';
 import Login from './pages/Login.jsx';
 import Register from './pages/Register.jsx';
 import Chat from './pages/Chat.jsx';
+import Admin from './pages/Admin.jsx';
 import UnlockModal from './components/UnlockModal.jsx';
+
+// ─── AdminRoute ───────────────────────────────────────────────────────────────
+// Chỉ cho vào /admin nếu đã đăng nhập và có role ADMIN
+// Chưa đăng nhập → /login | Đã đăng nhập nhưng không phải ADMIN → /chat
+function AdminRoute({ children }) {
+  const { isAuthenticated, role } = useAuth();
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  if (role !== 'ADMIN') return <Navigate to="/chat" replace />;
+  return children;
+}
 
 // ─── ProtectedRoute ───────────────────────────────────────────────────────────
 // Bao bọc các route yêu cầu đăng nhập (hiện tại chỉ /chat)
@@ -55,6 +66,9 @@ export default function App() {
               </ProtectedRoute>
             }
           />
+
+          {/* Trang admin — chỉ user có role ADMIN mới vào được */}
+          <Route path="/admin" element={<AdminRoute><Admin /></AdminRoute>} />
 
           {/* Mọi route không tồn tại → về login */}
           <Route path="*" element={<Navigate to="/login" replace />} />
