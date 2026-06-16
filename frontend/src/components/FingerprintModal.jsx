@@ -1,22 +1,20 @@
 import { useState, useEffect } from 'react';
 import { generateFingerprint } from '../crypto/fingerprint.js';
 import { fromBase64 } from '../crypto/x3dh.js';
-import * as api from '../services/api.js';
 
-// myIKPub    : Uint8Array — IK_pub của user hiện tại (từ AuthContext)
-// peerIKPub  : string base64 — IK_pub của peer (từ listConversations)
-// peerUsername: string
-// conversationId: string
-// token      : string
-// onClose    : () => void — đóng modal
-// onVerified : () => void — callback sau khi verify thành công
+// myIKPub      : Uint8Array — IK_pub của user hiện tại (từ AuthContext)
+// peerIKPub    : string base64 — IK_pub của peer
+// peerUsername : string
+// onClose      : () => void — đóng modal (nút "Để sau")
+// onConfirm    : async () => void — caller tự quyết gọi API nào (1-1 hay group)
+// onVerified   : () => void — callback sau khi onConfirm thành công
 export default function FingerprintModal({
-  myIKPub, peerIKPub, peerUsername, conversationId, token, onClose, onVerified,
+  myIKPub, peerIKPub, peerUsername, onClose, onConfirm, onVerified,
 }) {
-  const [fingerprint, setFingerprint] = useState('');
-  const [isLoading,   setIsLoading]   = useState(true);
+  const [fingerprint,  setFingerprint]  = useState('');
+  const [isLoading,    setIsLoading]    = useState(true);
   const [isConfirming, setIsConfirming] = useState(false);
-  const [error, setError] = useState('');
+  const [error,        setError]        = useState('');
 
   // Tính fingerprint khi modal mở — SHA-512 × 5200 vòng, chạy ~300ms
   useEffect(() => {
@@ -28,12 +26,12 @@ export default function FingerprintModal({
     generateFingerprint(myIKPub, fromBase64(peerIKPub))
       .then(fp => { setFingerprint(fp); setIsLoading(false); })
       .catch(() => { setError('Không tính được fingerprint.'); setIsLoading(false); });
-  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleConfirm() {
     setIsConfirming(true);
     try {
-      await api.verifyFingerprint(token, conversationId);
+      await onConfirm();
       onVerified();
     } catch (err) {
       setError(err.message);
@@ -64,7 +62,7 @@ export default function FingerprintModal({
         </div>
 
         {/* Khu vực fingerprint */}
-        <div className="bg-gray-50 rounded-xl p-4 min-h-[96px] flex items-center justify-center">
+        <div className="bg-gray-50 rounded-xl p-4 min-h-24 flex items-center justify-center">
           {isLoading && (
             <p className="text-sm text-gray-400 animate-pulse">Đang tính fingerprint...</p>
           )}

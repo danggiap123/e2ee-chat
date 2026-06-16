@@ -281,6 +281,18 @@ export async function downloadFile(token, fileId) {
 
 // ─── USERS ────────────────────────────────────────────────────────────────────
 
+// ─── PEERS ────────────────────────────────────────────────────────────────────
+
+// PATCH /peers/:peerId/verify
+// Đánh dấu đã xác minh fingerprint của peerId ngoài đời thực.
+// Idempotent — gọi nhiều lần vẫn trả 200.
+// Không gắn với group/conversation — verify 1 lần dùng được ở mọi nhóm.
+export async function verifyPeer(token, peerId) {
+  return apiFetch(`/peers/${peerId}/verify`, { method: 'PATCH' }, token);
+}
+
+// ─── USERS ────────────────────────────────────────────────────────────────────
+
 // GET /users?search=keyword
 // Tìm user theo username (contains, case-insensitive).
 // keyword nên >= 2 ký tự — validate ở FE trước khi gọi (không gọi với keyword rỗng).

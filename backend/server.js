@@ -11,6 +11,7 @@ const conversationRoutes = require('./routes/conversations');
 const userRoutes = require('./routes/users');
 const groupRoutes = require('./routes/groups');
 const fileRoutes = require('./routes/files');
+const peerRoutes = require('./routes/peers');
 
 const app = express(); // Tạo Express app — sẽ gắn vào http.Server để phục vụ REST API
 
@@ -33,6 +34,7 @@ app.use('/conversations', conversationRoutes);
 app.use('/users', userRoutes);
 app.use('/groups', groupRoutes);
 app.use('/files', fileRoutes);
+app.use('/peers', peerRoutes);
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 

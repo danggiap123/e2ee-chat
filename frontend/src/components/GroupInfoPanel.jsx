@@ -1,30 +1,35 @@
 import { useState, useRef, useEffect } from 'react';
 import * as api from '../services/api.js';
 import Avatar from './Avatar.jsx';
+import FingerprintModal from './FingerprintModal.jsx';
 
 // Panel thông tin nhóm — trượt vào từ bên phải khi click tên nhóm
 // Props:
-//   group        : { groupId, name, members: [{id, username}], adminId, createdBy }
-//   currentUserId: string — userId của người đang đăng nhập
-//   token        : string
-//   onClose      : () => void
-//   onMemberAdded: (member: {id, username}) => void  — cập nhật state nhóm
-//   onMemberRemoved: (userId: string) => void
-//   onAdminTransferred: (newAdminId: string) => void
-//   onLeftGroup  : () => void — callback khi mình tự rời nhóm
+//   group            : { groupId, name, members: [{id, username, ikPub?, isVerifiedByMe?}], adminId }
+//   currentUserId    : string
+//   myIKPub          : Uint8Array — IK_pub của user hiện tại, dùng để tính fingerprint
+//   token            : string
+//   onClose          : () => void
+//   onMemberAdded    : (member) => void
+//   onMemberRemoved  : (userId) => void
+//   onAdminTransferred: (newAdminId) => void
+//   onLeftGroup      : () => void
+//   onMemberVerified : (peerId: string) => void — cập nhật isVerifiedByMe trong Chat.jsx
 export default function GroupInfoPanel({
-  group, currentUserId, token,
-  onClose, onMemberAdded, onMemberRemoved, onAdminTransferred, onLeftGroup,
+  group, currentUserId, myIKPub, token,
+  onClose, onMemberAdded, onMemberRemoved, onAdminTransferred, onLeftGroup, onMemberVerified,
 }) {
-  const [searchQuery,    setSearchQuery]    = useState('');
-  const [searchResults,  setSearchResults]  = useState([]);
-  const [isSearching,    setIsSearching]    = useState(false);
-  const [showAddSearch,  setShowAddSearch]  = useState(false);
-  const [actionLoading,  setActionLoading]  = useState(null); // userId đang xử lý
-  const [error,          setError]          = useState('');
-  const [showLeaveModal, setShowLeaveModal] = useState(false);
+  const [searchQuery,       setSearchQuery]       = useState('');
+  const [searchResults,     setSearchResults]     = useState([]);
+  const [isSearching,       setIsSearching]       = useState(false);
+  const [showAddSearch,     setShowAddSearch]     = useState(false);
+  const [actionLoading,     setActionLoading]     = useState(null);
+  const [error,             setError]             = useState('');
+  const [showLeaveModal,    setShowLeaveModal]    = useState(false);
   const [showTransferModal, setShowTransferModal] = useState(false);
-  const [selectedNewAdmin, setSelectedNewAdmin] = useState(null);
+  const [selectedNewAdmin,  setSelectedNewAdmin]  = useState(null);
+  // member đang mở FingerprintModal — { id, username, ikPub }
+  const [fingerprintTarget, setFingerprintTarget] = useState(null);
   const searchTimerRef = useRef(null);
 
   const isAdmin = group.adminId === currentUserId;
@@ -188,6 +193,8 @@ export default function GroupInfoPanel({
               const memberIsAdmin = member.id === getAdminId();
               const isSelf = member.id === currentUserId;
               const isProcessing = actionLoading === member.id;
+              const canVerify = !isSelf && !!member.ikPub && myIKPub;
+              const isVerified = member.isVerifiedByMe === true;
 
               return (
                 <div
@@ -209,6 +216,32 @@ export default function GroupInfoPanel({
                       </span>
                     )}
                   </div>
+
+                  {/* Shield icon xác minh — chỉ hiện với thành viên khác */}
+                  {!isSelf && (
+                    <button
+                      onClick={() => canVerify && setFingerprintTarget(member)}
+                      disabled={!canVerify}
+                      title={
+                        !member.ikPub ? 'Người dùng chưa upload key'
+                        : isVerified    ? 'Đã xác minh — click để xem lại'
+                        :                 'Click để xác minh danh tính'
+                      }
+                      className={`p-1.5 rounded-full transition-colors
+                        ${isVerified
+                          ? 'text-green-500 hover:bg-green-50'
+                          : canVerify
+                            ? 'text-gray-300 hover:text-blue-500 hover:bg-blue-50'
+                            : 'text-gray-200 cursor-not-allowed'
+                        }`}
+                    >
+                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd"
+                          d="M10 1.944A11.954 11.954 0 012.166 5C2.056 5.649 2 6.319 2 7c0 5.225 3.34 9.67 8 11.317C14.66 16.67 18 12.225 18 7c0-.682-.057-1.35-.166-2.001A11.954 11.954 0 0110 1.944zM11 14a1 1 0 11-2 0 1 1 0 012 0zm0-7a1 1 0 10-2 0v3a1 1 0 102 0V7z"
+                          clipRule="evenodd" />
+                      </svg>
+                    </button>
+                  )}
 
                   {/* Nút xóa thành viên — admin thấy với tất cả trừ chính mình */}
                   {isAdmin && !isSelf && (
@@ -409,6 +442,21 @@ export default function GroupInfoPanel({
             )}
           </div>
         </div>
+      )}
+
+      {/* FingerprintModal — mở khi click shield icon của 1 member */}
+      {fingerprintTarget && myIKPub && (
+        <FingerprintModal
+          myIKPub={myIKPub}
+          peerIKPub={fingerprintTarget.ikPub}
+          peerUsername={fingerprintTarget.username}
+          onClose={() => setFingerprintTarget(null)}
+          onConfirm={() => api.verifyPeer(token, fingerprintTarget.id)}
+          onVerified={() => {
+            onMemberVerified(fingerprintTarget.id);
+            setFingerprintTarget(null);
+          }}
+        />
       )}
 
       {/* Modal chuyển quyền admin (không rời nhóm) */}

@@ -149,10 +149,25 @@ router.patch('/:convId/fingerprint', requireAuth, async (req, res) => {
       return res.json({ message: 'Fingerprint đã được xác nhận trước đó' });
     }
 
-    await prisma.conversation.update({
-      where: { id: convId },
-      data: { fingerprintVerified: true },
-    });
+    // Tìm peerId (người kia trong conversation)
+    const peerId = conversation.participantA === req.user.userId
+      ? conversation.participantB
+      : conversation.participantA;
+
+    // Ghi đồng thời vào Conversation + PeerVerification trong 1 transaction
+    // Lý do: PeerVerification là nguồn sự thật chung cho cả 1-1 và group —
+    // nếu chỉ ghi Conversation thì group sẽ không nhận ra đã verify rồi
+    await prisma.$transaction([
+      prisma.conversation.update({
+        where: { id: convId },
+        data: { fingerprintVerified: true },
+      }),
+      prisma.peerVerification.upsert({
+        where: { verifierId_peerId: { verifierId: req.user.userId, peerId } },
+        create: { verifierId: req.user.userId, peerId },
+        update: {},
+      }),
+    ]);
 
     return res.json({ message: 'Xác nhận fingerprint thành công' });
   } catch (err) {

@@ -15,14 +15,16 @@ model User {
   passwordHash String
   createdAt    DateTime @default(now())
 
-  keyBundle        KeyBundle?
-  sentMessages     Message[]      @relation("SentMessages")
-  receivedMessages Message[]      @relation("ReceivedMessages")
-  conversationsAsA Conversation[] @relation("ConversationA")
-  conversationsAsB Conversation[] @relation("ConversationB")
-  groupsCreated    Group[]        @relation("GroupCreator")
-  groupMemberships GroupMember[]
-  uploadedFiles    UploadedFile[]
+  keyBundle             KeyBundle?
+  sentMessages          Message[]          @relation("SentMessages")
+  receivedMessages      Message[]          @relation("ReceivedMessages")
+  conversationsAsA      Conversation[]     @relation("ConversationA")
+  conversationsAsB      Conversation[]     @relation("ConversationB")
+  groupsCreated         Group[]            @relation("GroupCreator")
+  groupMemberships      GroupMember[]
+  uploadedFiles         UploadedFile[]
+  verificationsGiven    PeerVerification[] @relation("Verifier")
+  verificationsReceived PeerVerification[] @relation("Peer")
 }
 
 // Bảng public key của mỗi user — server chỉ thấy public key, không bao giờ thấy private key
@@ -96,6 +98,21 @@ model UploadedFile {
   uploaderId String
   uploader   User     @relation(fields: [uploaderId], references: [id])
   createdAt  DateTime @default(now())
+}
+
+// Bảng lưu trạng thái xác minh fingerprint giữa 2 user — độc lập với group/conversation
+// verifierId đã xác minh IK của peerId ngoài đời thực và click "Xác nhận"
+model PeerVerification {
+  id         String   @id @default(uuid())
+  verifierId String
+  peerId     String
+  verifiedAt DateTime @default(now())
+
+  verifier User @relation("Verifier", fields: [verifierId], references: [id])
+  peer     User @relation("Peer",     fields: [peerId],     references: [id])
+
+  @@unique([verifierId, peerId])
+  @@index([verifierId])
 }
 
 // Bảng tin nhắn đã mã hóa — dùng chung cho cả 1-1 và group

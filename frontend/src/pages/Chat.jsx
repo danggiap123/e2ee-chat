@@ -257,7 +257,7 @@ export default function Chat() {
   }
 
   // ─── Chọn group ───────────────────────────────────────────────────────────────
-  function handleSelectGroup(group) {
+  async function handleSelectGroup(group) {
     setActiveGroupId(group.groupId);
     setActiveGroup(group);
     setActiveConvId(null);
@@ -269,6 +269,13 @@ export default function Chat() {
       if (!prev.has(group.groupId)) return prev;
       const m = new Map(prev); m.delete(group.groupId); return m;
     });
+    // Load members đầy đủ (ikPub + isVerifiedByMe) để hiển thị badge + shield icon
+    try {
+      const { members } = await api.getGroupMembers(token, group.groupId);
+      setActiveGroup(prev => prev ? { ...prev, members } : prev);
+    } catch (err) {
+      console.error('[Chat] getGroupMembers:', err);
+    }
   }
 
   function handleGroupCreated(group) {
@@ -560,6 +567,19 @@ export default function Chat() {
     );
   }
 
+  // Sau khi verify 1 member trong group → cập nhật isVerifiedByMe trong activeGroup
+  function handlePanelMemberVerified(peerId) {
+    setActiveGroup(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        members: prev.members.map(m =>
+          m.id === peerId ? { ...m, isVerifiedByMe: true } : m
+        ),
+      };
+    });
+  }
+
   // ─── peersMap cho MessageList hiển thị tên sender ────────────────────────────
   const peersMap = useMemo(() => {
     const m = new Map();
@@ -674,9 +694,26 @@ export default function Chat() {
                   <p className="text-xs text-gray-500">{activeGroup.members?.length ?? 0} thành viên · Nhấn để xem</p>
                 </div>
               </button>
-              <span className="text-xs bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-3 py-1">
-                E2EE · Nhóm
-              </span>
+              {(() => {
+                const others = activeGroup.members.filter(m => m.id !== userId);
+                const verified = others.filter(m => m.isVerifiedByMe).length;
+                const allOk = others.length > 0 && verified === others.length;
+                return allOk ? (
+                  <span className="text-xs bg-green-50 text-green-700 border border-green-200 rounded-full px-3 py-1 flex items-center gap-1">
+                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 1l2.39 4.843L18 6.86l-4 3.9.944 5.5L10 13.77l-4.944 2.49L6 10.76 2 6.86l5.61-1.017L10 1z" clipRule="evenodd" />
+                    </svg>
+                    E2EE · Tất cả đã xác minh
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => setShowGroupInfo(true)}
+                    className="text-xs bg-amber-50 text-amber-700 border border-amber-200 rounded-full px-3 py-1 hover:bg-amber-100 transition-colors"
+                  >
+                    E2EE · {verified}/{others.length} đã xác minh
+                  </button>
+                );
+              })()}
             </div>
 
             {sendError && (
@@ -720,8 +757,10 @@ export default function Chat() {
       {showFingerprint && IK_pub && activePeer?.ikPub && (
         <FingerprintModal
           myIKPub={IK_pub} peerIKPub={activePeer.ikPub}
-          peerUsername={activePeer.username} conversationId={activeConvId}
-          token={token} onClose={() => setShowFingerprint(false)} onVerified={handleVerified}
+          peerUsername={activePeer.username}
+          onClose={() => setShowFingerprint(false)}
+          onVerified={handleVerified}
+          onConfirm={() => api.verifyFingerprint(token, activeConvId)}
         />
       )}
       {showFingerprint && !activePeer?.ikPub && (
@@ -768,12 +807,14 @@ export default function Chat() {
         <GroupInfoPanel
           group={activeGroup}
           currentUserId={userId}
+          myIKPub={IK_pub}
           token={token}
           onClose={() => setShowGroupInfo(false)}
           onMemberAdded={handlePanelMemberAdded}
           onMemberRemoved={handlePanelMemberRemoved}
           onAdminTransferred={handlePanelAdminTransferred}
           onLeftGroup={handlePanelLeftGroup}
+          onMemberVerified={handlePanelMemberVerified}
         />
       )}
     </div>

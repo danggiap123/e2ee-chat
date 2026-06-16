@@ -175,6 +175,14 @@ router.get('/:groupId/members', requireAuth, async (req, res) => {
       }),
     ]);
 
+    // Lấy danh sách peerId mà user hiện tại đã verify trong nhóm này
+    const memberIds = members.map(m => m.user.id).filter(id => id !== req.user.userId);
+    const verifications = await prisma.peerVerification.findMany({
+      where: { verifierId: req.user.userId, peerId: { in: memberIds } },
+      select: { peerId: true },
+    });
+    const verifiedSet = new Set(verifications.map(v => v.peerId));
+
     return res.json({
       members: members.map(m => ({
         id: m.user.id,
@@ -182,6 +190,8 @@ router.get('/:groupId/members', requireAuth, async (req, res) => {
         ikPub: m.user.keyBundle?.ikPub ?? null,
         isAdmin: m.user.id === group.adminId,
         joinedAt: m.joinedAt,
+        // null cho chính mình (không tự verify mình), true/false cho người khác
+        isVerifiedByMe: m.user.id === req.user.userId ? null : verifiedSet.has(m.user.id),
       })),
     });
   } catch (err) {
