@@ -311,7 +311,14 @@ export default function Chat() {
   async function getOrCreateSK(conversationId, peerId) {
     const cached = sessionKeysRef.current.get(conversationId);
     if (cached) return { SK: cached };
-    const stored = await storage.loadSession(conversationId, wrappingKey);
+
+    // Nếu loadSession throw (wrappingKey không khớp session cũ) → xóa session hỏng, tạo lại
+    let stored = null;
+    try {
+      stored = await storage.loadSession(conversationId, wrappingKey);
+    } catch {
+      await storage.deleteSession(conversationId);
+    }
     if (stored) { sessionKeysRef.current.set(conversationId, stored); return { SK: stored }; }
 
     const bundle = await api.fetchKeyBundle(token, peerId);
@@ -329,7 +336,13 @@ export default function Chat() {
     const cacheKey = `${groupId}:${recipientId}`;
     const cached = sessionKeysRef.current.get(cacheKey);
     if (cached) return { SK: cached };
-    const stored = await storage.loadSession(cacheKey, wrappingKey);
+
+    let stored = null;
+    try {
+      stored = await storage.loadSession(cacheKey, wrappingKey);
+    } catch {
+      await storage.deleteSession(cacheKey);
+    }
     if (stored) { sessionKeysRef.current.set(cacheKey, stored); return { SK: stored }; }
 
     const bundle = await api.fetchKeyBundle(token, recipientId);
@@ -536,11 +549,20 @@ export default function Chat() {
   }
 
   // ─── Xóa tin nhắn / conversation ─────────────────────────────────────────────
-  function handleDeleteMessage(msgId) { setConfirmModal({ type: 'deleteMessage', id: msgId }); }
+  // fileInfo: { fileId, ... } | null — truyền từ MessageList khi xóa tin file/ảnh
+  function handleDeleteMessage(msgId, fileInfo = null) {
+    setConfirmModal({ type: 'deleteMessage', id: msgId, fileInfo });
+  }
 
-  async function doDeleteMessage(msgId) {
+  async function doDeleteMessage(msgId, fileInfo) {
     setConfirmModal(null);
     try {
+      // Nếu là tin file/ảnh → xóa file trên server trước (best-effort, không block nếu lỗi)
+      if (fileInfo?.fileId) {
+        await api.deleteFile(token, fileInfo.fileId).catch(err =>
+          console.warn('[Chat] deleteFile (non-fatal):', err)
+        );
+      }
       await api.deleteMessage(token, msgId);
       removeMessage(msgId);
     } catch (err) { console.error('[Chat] deleteMessage:', err); }
@@ -596,7 +618,7 @@ export default function Chat() {
 
   // ─── Render ───────────────────────────────────────────────────────────────────
   return (
-    <div className="flex h-screen bg-gray-100 overflow-hidden">
+    <div className="flex h-screen bg-slate-100 overflow-hidden">
       <ChatSidebar
         conversations={conversations}
         activeConvId={activeConvId}
@@ -622,7 +644,7 @@ export default function Chat() {
         {/* ── Chat 1-1 ── */}
         {isDirectActive && (
           <>
-            <div className="bg-white border-b border-gray-200 px-5 py-3 flex items-center justify-between">
+            <div className="bg-white border-b border-slate-200 px-5 py-3 flex items-center justify-between shadow-sm">
               <div className="flex items-center gap-3">
                 <div className="relative">
                   <div className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-semibold"
@@ -630,27 +652,31 @@ export default function Chat() {
                     {activePeer.username.slice(0, 2).toUpperCase()}
                   </div>
                   {onlineUsers.has(activePeer.id) && (
-                    <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-400 rounded-full border-2 border-white" />
+                    <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-400 rounded-full border-2 border-white" />
                   )}
                 </div>
                 <div>
-                  <p className="font-semibold text-gray-900 text-sm">{activePeer.username}</p>
-                  <p className="text-xs text-gray-500">
+                  <p className="font-semibold text-slate-900 text-sm">{activePeer.username}</p>
+                  <p className={`text-xs flex items-center gap-1 ${onlineUsers.has(activePeer.id) ? 'text-emerald-500' : 'text-slate-400'}`}>
+                    <span className={`inline-block w-1.5 h-1.5 rounded-full ${onlineUsers.has(activePeer.id) ? 'bg-emerald-400' : 'bg-slate-300'}`} />
                     {onlineUsers.has(activePeer.id) ? 'Đang hoạt động' : 'Không hoạt động'}
                   </p>
                 </div>
               </div>
               <div className="flex items-center gap-2">
                 {isVerified ? (
-                  <span className="text-xs bg-green-50 text-green-700 border border-green-200 rounded-full px-3 py-1 flex items-center gap-1">
-                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M10 1l2.39 4.843L18 6.86l-4 3.9.944 5.5L10 13.77l-4.944 2.49L6 10.76 2 6.86l5.61-1.017L10 1z" clipRule="evenodd" />
+                  <span className="text-xs bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full px-3 py-1 flex items-center gap-1.5 font-medium">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
                     </svg>
                     E2EE · Đã xác minh
                   </span>
                 ) : (
                   <button onClick={() => setShowFingerprint(true)}
-                    className="text-xs bg-amber-50 text-amber-700 border border-amber-200 rounded-full px-3 py-1 hover:bg-amber-100 transition-colors">
+                    className="text-xs bg-amber-50 text-amber-700 border border-amber-200 rounded-full px-3 py-1 hover:bg-amber-100 transition-colors flex items-center gap-1.5 font-medium">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                    </svg>
                     Xác minh danh tính
                   </button>
                 )}
@@ -671,7 +697,10 @@ export default function Chat() {
               onDownloadFile={handleDownloadFile}
             />
             {activePeer?.isActive === false ? (
-              <div className="px-4 py-3 bg-gray-100 border-t text-center text-sm text-gray-500">
+              <div className="px-4 py-3.5 bg-slate-100 border-t border-slate-200 text-center text-sm text-slate-500 flex items-center justify-center gap-2">
+                <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                </svg>
                 Người dùng này đã không còn trong tổ chức. Không thể gửi tin nhắn mới.
               </div>
             ) : (
@@ -686,19 +715,18 @@ export default function Chat() {
         {/* ── Chat nhóm ── */}
         {isGroupActive && (
           <>
-            <div className="bg-white border-b border-gray-200 px-5 py-3 flex items-center justify-between">
-              {/* Click vào tên nhóm → mở GroupInfoPanel */}
+            <div className="bg-white border-b border-slate-200 px-5 py-3 flex items-center justify-between shadow-sm">
               <button
                 onClick={() => setShowGroupInfo(v => !v)}
-                className="flex items-center gap-3 hover:bg-gray-50 rounded-xl px-2 py-1 -ml-2 transition-colors"
+                className="flex items-center gap-3 hover:bg-slate-50 rounded-xl px-2 py-1 -ml-2 transition-colors"
               >
-                <div className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold"
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center text-white text-sm font-bold"
                   style={{ backgroundColor: `hsl(${[...activeGroup.name].reduce((a,c) => a + c.charCodeAt(0), 0) % 360}, 55%, 42%)` }}>
                   {activeGroup.name.slice(0, 2).toUpperCase()}
                 </div>
                 <div className="text-left">
-                  <p className="font-semibold text-gray-900 text-sm">{activeGroup.name}</p>
-                  <p className="text-xs text-gray-500">{activeGroup.members?.length ?? 0} thành viên · Nhấn để xem</p>
+                  <p className="font-semibold text-slate-900 text-sm">{activeGroup.name}</p>
+                  <p className="text-xs text-slate-400">{activeGroup.members?.length ?? 0} thành viên · Nhấn để xem</p>
                 </div>
               </button>
               {(() => {
@@ -706,17 +734,20 @@ export default function Chat() {
                 const verified = others.filter(m => m.isVerifiedByMe).length;
                 const allOk = others.length > 0 && verified === others.length;
                 return allOk ? (
-                  <span className="text-xs bg-green-50 text-green-700 border border-green-200 rounded-full px-3 py-1 flex items-center gap-1">
-                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M10 1l2.39 4.843L18 6.86l-4 3.9.944 5.5L10 13.77l-4.944 2.49L6 10.76 2 6.86l5.61-1.017L10 1z" clipRule="evenodd" />
+                  <span className="text-xs bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full px-3 py-1 flex items-center gap-1.5 font-medium">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
                     </svg>
                     E2EE · Tất cả đã xác minh
                   </span>
                 ) : (
                   <button
                     onClick={() => setShowGroupInfo(true)}
-                    className="text-xs bg-amber-50 text-amber-700 border border-amber-200 rounded-full px-3 py-1 hover:bg-amber-100 transition-colors"
+                    className="text-xs bg-amber-50 text-amber-700 border border-amber-200 rounded-full px-3 py-1 hover:bg-amber-100 transition-colors flex items-center gap-1.5 font-medium"
                   >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                    </svg>
                     E2EE · {verified}/{others.length} đã xác minh
                   </button>
                 );
@@ -745,17 +776,25 @@ export default function Chat() {
 
         {/* ── Màn hình chờ ── */}
         {!isDirectActive && !isGroupActive && (
-          <div className="flex-1 flex flex-col items-center justify-center text-center p-8 space-y-3">
-            <div className="w-16 h-16 rounded-full bg-blue-100 flex items-center justify-center">
-              <svg className="w-8 h-8 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="flex-1 flex flex-col items-center justify-center text-center p-8 space-y-4">
+            <div className="w-20 h-20 rounded-2xl bg-slate-200 flex items-center justify-center">
+              <svg className="w-10 h-10 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
                   d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
               </svg>
             </div>
-            <p className="text-gray-700 font-medium">Chọn một cuộc trò chuyện</p>
-            <p className="text-sm text-gray-400 max-w-xs">
-              Chọn tin nhắn 1-1 hoặc nhóm ở sidebar bên trái để bắt đầu.
-            </p>
+            <div>
+              <p className="text-slate-700 font-semibold text-base">Chọn một cuộc trò chuyện</p>
+              <p className="text-sm text-slate-400 mt-1 max-w-xs">
+                Chọn tin nhắn 1-1 hoặc nhóm ở sidebar để bắt đầu nhắn tin.
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5 text-xs text-slate-400 bg-slate-200/60 rounded-full px-3 py-1.5">
+              <svg className="w-3.5 h-3.5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+              </svg>
+              Mã hóa đầu cuối · Blind Server
+            </div>
           </div>
         )}
       </div>
@@ -799,7 +838,7 @@ export default function Chat() {
       {confirmModal?.type === 'deleteMessage' && (
         <ConfirmModal title="Xóa tin nhắn?" body="Tin nhắn sẽ bị xóa vĩnh viễn."
           confirmLabel="Xóa" danger
-          onConfirm={() => doDeleteMessage(confirmModal.id)}
+          onConfirm={() => doDeleteMessage(confirmModal.id, confirmModal.fileInfo)}
           onCancel={() => setConfirmModal(null)} />
       )}
       {confirmModal?.type === 'deleteConv' && (

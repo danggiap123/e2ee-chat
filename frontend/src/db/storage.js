@@ -168,6 +168,11 @@ export async function loadSession(conversationId, wrappingKey) {
   return SK;
 }
 
+/** Xóa session key bị hỏng (wrappingKey không khớp) — gọi trước khi tạo lại X3DH */
+export async function deleteSession(conversationId) {
+  await db.sessions.delete(conversationId);
+}
+
 // ─── export / import .e2ee (chuyển thiết bị) ─────────────────────────────────
 
 /**

@@ -72,4 +72,30 @@ router.get('/:fileId', requireAuth, async (req, res) => {
   }
 });
 
+// ─── DELETE /files/:fileId ────────────────────────────────────────────────────
+// Chỉ uploader mới được xóa — xóa cả record DB lẫn bytes trên disk
+router.delete('/:fileId', requireAuth, async (req, res) => {
+  try {
+    const { fileId } = req.params;
+
+    const record = await prisma.uploadedFile.findUnique({ where: { id: fileId } });
+    if (!record) return res.status(404).json({ error: 'File không tồn tại' });
+
+    if (record.uploaderId !== req.user.userId) {
+      return res.status(403).json({ error: 'Bạn không có quyền xóa file này' });
+    }
+
+    // Xóa file trên disk trước, sau đó xóa record DB
+    const filePath = path.join(UPLOADS_DIR, fileId);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+    await prisma.uploadedFile.delete({ where: { id: fileId } });
+
+    return res.json({ message: 'Đã xóa file' });
+  } catch (err) {
+    console.error('[DELETE /files/:fileId]', err);
+    return res.status(500).json({ error: 'Lỗi server khi xóa file' });
+  }
+});
+
 module.exports = router;

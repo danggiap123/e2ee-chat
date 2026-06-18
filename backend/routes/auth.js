@@ -3,7 +3,6 @@ const router = express.Router();
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { PrismaClient } = require('@prisma/client');
-const rateLimit = require('express-rate-limit');
 const redis = require('../redis');
 const { requireAuth } = require('../middleware/auth');
 
@@ -14,24 +13,8 @@ const BCRYPT_ROUNDS = 12; // cost factor — hash lặp 2^12 = 4096 lần, mất
 // Hash giả dùng để chống timing attack khi username không tồn tại
 const DUMMY_HASH = '$2b$12$somerandombcrypthashvalueusedfordummyverification1234';
 
-// ─── Rate Limiters ────────────────────────────────────────────────────────────
-// windowMs : 15 phút tính bằng milliseconds (15 * 60 * 1000)
-// limit    : tối đa bao nhiêu request trong khoảng windowMs
-// message  : JSON trả về khi bị chặn (standardHeaders + legacyHeaders tắt noise)
-const registerLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 10,
-  message: { error: 'Quá nhiều yêu cầu đăng ký, thử lại sau 15 phút' },
-});
-
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 20,
-  message: { error: 'Quá nhiều yêu cầu đăng nhập, thử lại sau 15 phút' },
-});
-
 // POST /auth/register
-router.post('/register', registerLimiter, async (req, res) => {
+router.post('/register', async (req, res) => {
   try {
     const { username, password, email } = req.body;
 
@@ -100,7 +83,7 @@ router.post('/register', registerLimiter, async (req, res) => {
 });
 
 // POST /auth/login
-router.post('/login', loginLimiter, async (req, res) => {
+router.post('/login', async (req, res) => {
   try {
     const { username, password } = req.body;
 

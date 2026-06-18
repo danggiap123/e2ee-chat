@@ -57,7 +57,7 @@ function FileBubble({ file, senderId, isMine, onDownload }) {
   }
 
   const bubbleBase = `rounded-2xl text-sm overflow-hidden
-    ${isMine ? 'bg-blue-600 text-white' : 'bg-white border border-gray-200 text-gray-800 shadow-sm'}`;
+    ${isMine ? 'bg-blue-500 text-white shadow-sm shadow-blue-200' : 'bg-white border border-slate-200 text-slate-800 shadow-sm'}`;
 
   if (file.type === 'image') {
     return (
@@ -156,7 +156,7 @@ export default function MessageList({
 
   if (messages.length === 0 && !isLoading) {
     return (
-      <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">
+      <div className="flex-1 flex items-center justify-center text-slate-400 text-sm bg-slate-50">
         Chưa có tin nhắn nào. Hãy bắt đầu cuộc trò chuyện!
       </div>
     );
@@ -166,25 +166,23 @@ export default function MessageList({
     <div
       ref={listRef}
       onScroll={handleScroll}
-      className="flex-1 overflow-y-auto px-4 py-3 space-y-1"
+      className="flex-1 overflow-y-auto px-4 py-4 space-y-1 bg-slate-50"
     >
-      {/* Spinner load more ở đầu danh sách */}
       {isLoading && (
         <div className="text-center py-2">
-          <span className="text-xs text-gray-400 animate-pulse">Đang tải tin cũ hơn...</span>
+          <span className="text-xs text-slate-400 animate-pulse">Đang tải tin cũ hơn...</span>
         </div>
       )}
 
       {messages.map((msg, i) => {
-        // Tin hệ thống: render dạng separator giữa các bubble
         if (msg.isSystem) {
           return (
-            <div key={msg.id} className="flex items-center gap-3 py-1 px-2">
-              <div className="flex-1 h-px bg-gray-200" />
-              <span className="text-xs text-gray-400 text-center whitespace-nowrap shrink-0 max-w-[80%]">
+            <div key={msg.id} className="flex items-center gap-3 py-2 px-2">
+              <div className="flex-1 h-px bg-slate-200" />
+              <span className="text-xs text-slate-400 text-center whitespace-nowrap shrink-0 max-w-[80%] px-2">
                 {msg.systemText}
               </span>
-              <div className="flex-1 h-px bg-gray-200" />
+              <div className="flex-1 h-px bg-slate-200" />
             </div>
           );
         }
@@ -214,52 +212,48 @@ export default function MessageList({
 
             {/* Cột nội dung: tên + reply block + bubble + timestamp */}
             <div className={`max-w-[70%] flex flex-col ${isMine ? 'items-end' : 'items-start'}`}>
-              {/* Tên người gửi — chỉ hiện ở tin đầu của chuỗi, chỉ khi không phải mình */}
               {!isMine && isFirst && (
-                <span className="text-xs text-gray-500 mb-1 px-1">{peerUsername}</span>
+                <span className="text-xs text-slate-500 font-medium mb-1 px-1">{peerUsername}</span>
               )}
 
-              {/* Reply quoted block — hiện phía trên bubble nếu tin này là reply */}
               {replyTo && (
-                <div className={`text-xs mb-1 px-2 py-1 rounded-lg border-l-2 border-gray-400
-                  bg-gray-100 ${isMine ? 'self-end' : 'self-start'} max-w-50`}>
-                  <p className="font-semibold text-gray-700 leading-tight">{replyTo.u}</p>
-                  <p className="text-gray-500 truncate leading-tight">{replyTo.p}</p>
+                <div className={`text-xs mb-1.5 px-2.5 py-1.5 rounded-xl border-l-2
+                  ${isMine ? 'border-blue-300 bg-blue-500/20' : 'border-slate-300 bg-slate-100'}
+                  ${isMine ? 'self-end' : 'self-start'} max-w-52`}>
+                  <p className={`font-semibold leading-tight ${isMine ? 'text-blue-100' : 'text-slate-700'}`}>{replyTo.u}</p>
+                  <p className={`truncate leading-tight ${isMine ? 'text-blue-200' : 'text-slate-500'}`}>{replyTo.p}</p>
                 </div>
               )}
 
-              {/* Hàng ngang: bubble + nút hành động (reply / xóa) */}
               <div className={`flex items-center gap-1.5 ${isMine ? 'flex-row-reverse' : ''}`}>
-                {/* Bubble: file/ảnh hoặc text */}
                 {msg.isDecryptError ? (
-                  <div className="px-3 py-2 rounded-2xl text-sm opacity-50 italic bg-white border border-gray-200 text-gray-800 shadow-sm">
+                  <div className="px-3 py-2 rounded-2xl text-sm opacity-50 italic bg-white border border-slate-200 text-slate-500 shadow-sm">
                     ⚠ Không thể giải mã tin nhắn này
                   </div>
                 ) : file ? (
-                  <FileBubble
-                    file={file}
-                    senderId={msg.senderId}
-                    isMine={isMine}
-                    onDownload={onDownloadFile}
-                  />
+                  <FileBubble file={file} senderId={msg.senderId} isMine={isMine} onDownload={onDownloadFile} />
                 ) : (
                   <div
-                    className={`px-3 py-2 rounded-2xl text-sm leading-relaxed
+                    className={`px-3.5 py-2 rounded-2xl text-sm leading-relaxed
                       ${isMine
-                        ? 'bg-blue-600 text-white rounded-br-sm'
-                        : 'bg-white border border-gray-200 text-gray-800 rounded-bl-sm shadow-sm'}`}
+                        ? 'bg-blue-500 text-white rounded-br-md shadow-sm shadow-blue-200'
+                        : 'bg-white border border-slate-200 text-slate-800 rounded-bl-md shadow-sm'}`}
                   >
                     {text}
                   </div>
                 )}
 
-                {/* Nút hành động — chỉ hiện với tin text (không áp dụng cho file) */}
-                {!msg.isDecryptError && !file && (
+                {!msg.isDecryptError && (
                   <div className="flex items-center gap-0.5 invisible group-hover:visible shrink-0">
-                    {/* Nút reply */}
+                    {/* Reply — cho cả text lẫn file/ảnh */}
                     <button
-                      onClick={() => onReply?.({ id: msg.id, senderUsername, preview: text })}
-                      className="p-1 rounded-full text-gray-400 hover:text-blue-500 hover:bg-blue-50 transition-colors"
+                      onClick={() => {
+                        const preview = file
+                          ? (file.type === 'image' ? '📷 [Hình ảnh]' : `📎 ${file.fileName}`)
+                          : text;
+                        onReply?.({ id: msg.id, senderUsername, preview });
+                      }}
+                      className="p-1 rounded-full text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition-colors"
                       title="Trả lời"
                     >
                       <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -267,12 +261,11 @@ export default function MessageList({
                           d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
                       </svg>
                     </button>
-
-                    {/* Nút xóa — chỉ hiện với tin của mình */}
+                    {/* Xóa — cho cả text lẫn file/ảnh, chỉ tin của mình */}
                     {isMine && (
                       <button
-                        onClick={() => onDeleteMessage?.(msg.id)}
-                        className="p-1 rounded-full text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors"
+                        onClick={() => onDeleteMessage?.(msg.id, file ?? null)}
+                        className="p-1 rounded-full text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors"
                         title="Xóa tin nhắn"
                       >
                         <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -285,7 +278,7 @@ export default function MessageList({
                 )}
               </div>
 
-              <span className="text-xs text-gray-400 mt-0.5 px-1">
+              <span className="text-[11px] text-slate-400 mt-0.5 px-1">
                 {formatTime(msg.createdAt)}
               </span>
             </div>

@@ -174,6 +174,14 @@ export async function deleteMessage(token, messageId) {
   }, token);
 }
 
+// DELETE /files/:fileId
+// Xóa encrypted file trên disk + record DB — chỉ uploader mới xóa được.
+export async function deleteFile(token, fileId) {
+  return apiFetch(`/files/${fileId}`, {
+    method: 'DELETE',
+  }, token);
+}
+
 // POST /messages (group)
 // recipients: [{ userId, ciphertext, iv, aad, ekPub?, opkId?, ikPub? }]
 // Mỗi recipient nhận 1 bản mã riêng — server không đọc được nội dung

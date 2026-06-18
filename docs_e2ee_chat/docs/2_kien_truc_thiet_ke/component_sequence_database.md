@@ -22,10 +22,15 @@ User        Register Page     Auth Context       Server          PostgreSQL     
  │                │                │                │                │               │
  │                │                │─POST /auth/register────────────►│               │
  │                │                │  {username,email,password}      │               │
- │                │                │                │─Kiểm tra ─────►│               │
+ │                │                │                │─Check ────────►│               │
  │                │                │                │  AllowedEmail  │               │
+ │                │                │                │  (hoặc bypass  │               │
+ │                │                │                │  nếu ADMIN_    │               │
+ │                │                │                │  SEED_EMAIL)   │               │
  │                │                │                │─bcrypt.hash────┘               │
- │                │                │                │─INSERT User───►│               │
+ │                │                │                │─$transaction──►│               │
+ │                │                │                │  UPDATE AllowedEmail.usedAt    │
+ │                │                │                │  INSERT User (role=USER/ADMIN) │
  │                │                │                │◄──{userId}─────│               │
  │                │                │◄──{userId,msg}─│                │               │
  │                │                │  (KHÔNG có token)               │               │
@@ -34,7 +39,6 @@ User        Register Page     Auth Context       Server          PostgreSQL     
  │                │                │◄──────────────────────────────────────────────OK─│
  │                │                │                │                │               │
  │                │◄──resolve()────│                │                │               │
- │                │                │                │                │               │
  │◄─setSuccess(true)               │                │                │               │
  │   navigate('/login') sau 2.5s   │                │                │               │
 ```
@@ -58,18 +62,17 @@ User       Login Page      Auth Context        Server        PostgreSQL   Indexe
  │               │               │─POST /auth/login──────────────►│            │            │
  │               │               │  {username,password}           │            │            │
  │               │               │                │─findUser──────►            │            │
- │               │               │                │◄─{passwordHash}            │            │
+ │               │               │                │◄─{pwdHash,isActive,role}   │            │
+ │               │               │                │─check isActive             │            │
  │               │               │                │─bcrypt.compare()           │            │
- │               │               │                │─jwt.sign({userId},7d)      │            │
- │               │               │◄─{token,userId,username}───────│            │            │
- │               │               │  ← JWT sinh ở đây              │            │            │
+ │               │               │                │─jwt.sign({userId,role},7d) │            │
+ │               │               │◄─{token,userId,username,role}──│            │            │
  │               │               │                │               │            │            │
  │               │               │─hasPrivateKeys(userId)────────────────────►│            │
  │               │               │◄─true (hoặc throw DEVICE_NOT_REGISTERED)───│            │
  │               │               │                │               │            │            │
  │               │               │─getWrapSalt(userId)───────────────────────►│            │
  │               │               │◄─wrapSalt──────────────────────────────────│            │
- │               │               │                │               │            │            │
  │               │         [PBKDF2 600k vòng → wKey]              │            │            │
  │               │         [loadPrivateKeys → unwrap IK,SPK,OPKs] │            │            │
  │               │         [Tính lại SPK_pub, spkSig, opkPubs]    │            │            │
@@ -77,13 +80,10 @@ User       Login Page      Auth Context        Server        PostgreSQL   Indexe
  │               │               │─POST /keys/upload──────────────────────────────────────►│
  │               │               │  Authorization: Bearer {token}  │            │            │
  │               │               │  {ikPub,spkPub,spkSig,opkPubs} │            │            │
- │               │               │                │               │            │─requireAuth─┤
- │               │               │                │               │            │─INSERT ─────┤
- │               │               │                │               │            │  KeyBundle  │
  │               │               │◄─201 (hoặc 409 → bỏ qua)──────────────────────────────│
  │               │               │                │               │            │            │
- │               │         [localStorage: token,userId,username]   │            │            │
- │               │         [RAM: setWrappingKey,setIKSecret,setSPKPriv]         │            │
+ │               │         [localStorage: token,userId,username,role]           │            │
+ │               │         [RAM: setWrappingKey,setIKSecret,setSPKPriv,setRole] │            │
  │               │               │                │               │            │            │
  │               │◄─resolve()────│                │               │            │            │
  │               │  isAuthenticated=true → navigate('/chat')       │            │            │
@@ -91,7 +91,7 @@ User       Login Page      Auth Context        Server        PostgreSQL   Indexe
 
 ---
 
-## Sequence Diagram SD-03: Gửi Tin X3DH Lần Đầu
+## Sequence Diagram SD-03: Gửi Tin X3DH Lần Đầu (1-1)
 
 > Nguồn code: `Chat.jsx (getOrCreateSK)` → `x3dh.performX3DH_sender()` → `aesGcm.encryptMessage()`
 
@@ -123,7 +123,7 @@ Alice(Browser)    Crypto/Storage      Server(REST)     Server(WS)       Bob(Brow
       │                  │                  │                │            [getOPK(opkId)]
       │                  │                  │                │            [X3DH receiver]
       │                  │                  │                │            [saveSession]
-      │                  │                  │                │            [deleteOPK(opkId)]
+      │                  │                  │                │            [deleteOPK]
       │                  │                  │                │            [AES-GCM decrypt]
       │◄─ack {msgId}─────────────────────────────────────────│                 │
 ```
@@ -156,6 +156,102 @@ User       App.jsx/UnlockModal     Auth Context         IndexedDB
 
 ---
 
+## Sequence Diagram SD-05: Gửi Tin Nhóm (N Bản Mã Song Song)
+
+> Nguồn code: `Chat.jsx (handleSendGroup)` → `api.sendGroupMessage()` → `ws/handler.js`
+
+```
+Alice(Browser)    Crypto/Storage   Server(REST)    Server(WS)  Bob(Browser)  Carol(Browser)
+      │                  │               │               │            │              │
+      │─Gửi tin nhóm─────►               │               │            │              │
+      │            [getOrCreateGroupSK(gId, bob.id)]     │            │              │
+      │            [getOrCreateGroupSK(gId, carol.id)]   │            │              │
+      │            SK_AB cache: "${groupId}:${bob.id}"   │            │              │
+      │            SK_AC cache: "${groupId}:${carol.id}" │            │              │
+      │                  │               │               │            │              │
+      │            [encryptMessage(text, SK_AB, gId, aliceId)]        │              │
+      │            [encryptMessage(text, SK_AC, gId, aliceId)]        │              │
+      │            AAD = "${groupId}:${aliceId}" (giống nhau)         │              │
+      │                  │               │               │            │              │
+      │─POST /messages───────────────────►               │            │              │
+      │  [{recipientId:bob, ct1,iv1,aad},               │            │              │
+      │   {recipientId:carol, ct2,iv2,aad}]             │            │              │
+      │                  │               │─INSERT Msg×2─►│            │              │
+      │                  │               │─relay Bob─────►──relay────►│              │
+      │                  │               │─relay Carol───►──relay──────────────────►│
+      │◄─201─────────────────────────────│               │            │              │
+      │                  │               │               │      [X3DH/AES decrypt]   │
+```
+
+---
+
+## Sequence Diagram SD-06: Gửi File E2EE (Group)
+
+> Nguồn code: `Chat.jsx (handleSendGroupFile)` → `api.uploadFile()` → `api.sendGroupMessage()`
+
+```
+Alice(Browser)    Crypto/Storage   Server(REST)     Bob(Browser)  Carol(Browser)
+      │                  │               │                 │              │
+      │─Chọn file────────►               │                 │              │
+      │            [encryptBytesWithRandomKey(fileBytes)]  │              │
+      │            → {encryptedBytes, fileIv, fileKey}     │              │
+      │                  │               │                 │              │
+      │─POST /files/upload────────────────►               │              │
+      │  (encrypted bytes)               │                 │              │
+      │◄─{fileId}────────────────────────│                 │              │
+      │                  │               │                 │              │
+      │            payload_bob = {type, fileId, fileKey, fileIv, fileName, ...}
+      │            payload_carol = {type, fileId, fileKey, fileIv, fileName, ...}
+      │            ct_bob   = encryptMessage(JSON(payload_bob),   SK_AB, gId)
+      │            ct_carol = encryptMessage(JSON(payload_carol), SK_AC, gId)
+      │                  │               │                 │              │
+      │─POST /messages (group)────────────►               │              │
+      │  [{recipientId:bob, ct_bob,...},  │                 │              │
+      │   {recipientId:carol, ct_carol,...}]               │              │
+      │                  │               │─relay──────────►│              │
+      │                  │               │─relay──────────────────────────►
+      │                  │               │                 │              │
+      │                  │               │    Bob: decrypt ct_bob → payload → fileKey
+      │                  │               │    GET /files/{fileId} → encryptedBytes
+      │                  │               │    decryptBytesWithKey(bytes, fileIv, fileKey)
+```
+
+**Lưu ý bảo mật:** Server lưu 1 bản encrypted file. `fileKey` được wrap trong message payload của từng người → server không thể đọc key → không thể decrypt file.
+
+---
+
+## Sequence Diagram SD-07: Verify Fingerprint Nhóm (PeerVerification)
+
+> Nguồn code: `GroupInfoPanel.jsx` → `FingerprintModal.jsx` → `api.verifyPeer()`
+
+```
+Alice(Browser)    GroupInfoPanel    FingerprintModal     Server         PostgreSQL
+      │                  │                  │               │                │
+      │─Chọn nhóm────────►                  │               │                │
+      │─GET /groups/:id/members─────────────────────────────►               │
+      │◄─[{id,username,ikPub,isVerifiedByMe}]─────────────────────────────── │
+      │            Badge: "E2EE · 1/2 đã xác minh" (amber) │               │
+      │                  │                  │               │                │
+      │─Click badge──────►                  │               │                │
+      │            Mở GroupInfoPanel         │               │                │
+      │─Click shield Bob─►                  │               │                │
+      │                  │──open modal──────►                │                │
+      │                  │           [generateFingerprint(myIKPub, bob.ikPub)]
+      │                  │           → 60 chữ số            │                │
+      │                  │                  │               │                │
+      │                  │    (so sánh qua kênh ngoài)      │                │
+      │                  │─Xác nhận────────►│               │                │
+      │                  │                  │─PATCH /peers/{bob.id}/verify──►│
+      │                  │                  │               │─UPSERT ────────►
+      │                  │                  │               │  PeerVerification
+      │                  │                  │               │  {verifierId:alice, peerId:bob}
+      │                  │                  │◄─200───────────│                │
+      │◄─onMemberVerified(bob.id)────────────                │                │
+      │  shield Bob → xanh, badge → "2/2 Tất cả đã xác minh"│               │
+```
+
+---
+
 ## Database Schema — Mô Tả Chi Tiết
 
 ### Bảng `User`
@@ -164,8 +260,10 @@ User       App.jsx/UnlockModal     Auth Context         IndexedDB
 |---|---|---|
 | id | UUID PK | `@default(uuid())` — không đoán được |
 | username | String UNIQUE | tên đăng nhập |
-| email | String UNIQUE | phải có trong `AllowedEmail` |
+| email | String UNIQUE | phải có trong `AllowedEmail` hoặc là `ADMIN_SEED_EMAIL` |
 | passwordHash | String | `bcrypt(password, cost=12)` — KHÔNG lưu plaintext |
+| role | Enum (USER/ADMIN) | `@default(USER)` — ADMIN_SEED_EMAIL tự động nhận ADMIN |
+| isActive | Boolean | `@default(true)` — false = bị vô hiệu hóa bởi admin |
 | createdAt | DateTime | `@default(now())` |
 
 ---
@@ -183,8 +281,6 @@ User       App.jsx/UnlockModal     Auth Context         IndexedDB
 
 **Quan trọng:** `opkPubs` bị pop 1 phần tử mỗi lần ai đó `GET /keys/{userId}`. Server chỉ thấy public key — private key **không bao giờ rời khỏi browser**.
 
-**Khi nào INSERT?** — Tại `AuthContext.login()` bước 8, sau khi đã có JWT. KHÔNG phải lúc register.
-
 ---
 
 ### Bảng `Conversation`
@@ -197,8 +293,7 @@ User       App.jsx/UnlockModal     Auth Context         IndexedDB
 | fingerprintVerified | Boolean | `@default(false)` — MessageInput disabled nếu false |
 | createdAt | DateTime | |
 
-Index: `@@unique([participantA, participantB])` — tránh duplicate  
-Server tìm cả 2 chiều A↔B khi check existing (xem `conversations.js` dòng 30-36)
+Index: `@@unique([participantA, participantB])` — tránh duplicate
 
 ---
 
@@ -209,19 +304,19 @@ Server tìm cả 2 chiều A↔B khi check existing (xem `conversations.js` dòn
 | id | UUID PK | |
 | conversationId | String? FK | null nếu là tin nhóm |
 | groupId | String? FK | null nếu là tin 1-1 |
-| recipientId | String? | null nếu tin 1-1, có giá trị nếu tin nhóm |
+| recipientId | String? | null nếu tin 1-1, userId nhận nếu tin nhóm |
 | senderId | String FK | không null |
 | ciphertext | String? | base64 AES-256-GCM output |
 | iv | String? | base64 12B random IV |
-| aad | String? | `"{convId}:{senderId}"` — plaintext, authenticated |
-| ekPub | String? | base64 EK_pub — **chỉ có ở tin X3DH init**, null ở tin thường |
+| aad | String? | `"{convId}:{senderId}"` hoặc `"{groupId}:{senderId}"` |
+| ekPub | String? | base64 EK_pub — **chỉ có ở tin X3DH init** |
 | opkId | String? | UUID OPK đã dùng — **chỉ có ở tin X3DH init** |
 | ikPub | String? | base64 IK_pub của sender — **chỉ có ở tin X3DH init** |
 | isSystem | Boolean | `@default(false)` — tin hệ thống (thêm/rời nhóm) |
 | systemText | String? | text hiển thị cho tin hệ thống |
 | createdAt | DateTime | |
 
-**Replay attack protection:** `@@unique([conversationId, iv])` — server trả `409` nếu IV trùng (xem `messages.js` dòng 81-83: `err.code === 'P2002'`)
+**Replay attack protection:** `@@unique([conversationId, iv])` — server trả `409` nếu IV trùng (xem `messages.js`: `err.code === 'P2002'`)
 
 ---
 
@@ -233,5 +328,58 @@ Server tìm cả 2 chiều A↔B khi check existing (xem `conversations.js` dòn
 | email | String UNIQUE | email nhân viên được phép đăng ký |
 | usedAt | DateTime? | null = chưa dùng; có giá trị = đã đăng ký rồi |
 
-Admin thêm email qua script: `node scripts/add-employee.js email@company.com`  
-Khi register: server check `{email, usedAt: null}` — 1 email chỉ dùng 1 lần
+Admin quản lý qua trang `/admin` → Tab "Whitelist Email".
+
+---
+
+### Bảng `Group`
+
+| Cột | Kiểu | Ghi chú |
+|---|---|---|
+| id | UUID PK | |
+| name | String | tên nhóm |
+| createdBy | String FK | userId người tạo nhóm (admin nhóm) |
+| createdAt | DateTime | |
+
+---
+
+### Bảng `GroupMember`
+
+| Cột | Kiểu | Ghi chú |
+|---|---|---|
+| id | UUID PK | |
+| groupId | String FK | |
+| userId | String FK | |
+| joinedAt | DateTime | |
+
+Index: `@@unique([groupId, userId])` — không thêm trùng thành viên
+
+---
+
+### Bảng `UploadedFile`
+
+| Cột | Kiểu | Ghi chú |
+|---|---|---|
+| id | UUID PK | tên file trên disk (không đoán được) |
+| uploaderId | String FK | user đã upload |
+| createdAt | DateTime | |
+
+**Server lưu tại:** `/app/uploads/{id}` (mounted volume `uploads_data`)  
+**Server không biết:** nội dung file, loại file, tên file gốc — tất cả mã hóa trước khi upload
+
+---
+
+### Bảng `PeerVerification`
+
+| Cột | Kiểu | Ghi chú |
+|---|---|---|
+| id | UUID PK | |
+| verifierId | String FK | user thực hiện verify |
+| peerId | String FK | user được verify |
+| verifiedAt | DateTime | thời điểm xác nhận |
+
+Index: `@@unique([verifierId, peerId])` — mỗi cặp chỉ 1 bản ghi (upsert idempotent)
+
+**Tính toàn cục:** 1 bản ghi trong `PeerVerification` có hiệu lực ở tất cả nhóm. `GET /groups/:id/members` join bảng này để trả `isVerifiedByMe` cho từng member.
+
+**Đồng bộ 1-1 ↔ Group:** `PATCH /conversations/:id/fingerprint` dùng `$transaction` ghi đồng thời vào cả `Conversation.fingerprintVerified` và `PeerVerification` → verify 1-1 tự động được nhận diện ở group.

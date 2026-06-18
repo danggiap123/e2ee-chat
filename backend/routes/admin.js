@@ -119,14 +119,8 @@ router.patch('/users/:id/revoke-admin', async (req, res) => {
       return res.status(400).json({ error: 'Không thể tự thu hồi quyền admin của chính mình' });
     }
 
-    // FOR UPDATE lock toàn bộ row admin lại trong transaction.
-    // Nếu 2 request đến cùng lúc: request thứ 2 phải chờ request thứ 1 commit xong
-    // mới đọc được count → lúc đó count đã = 1 → bị từ chối → không thể xảy ra 0 admin.
     await prisma.$transaction(async (tx) => {
-      const result = await tx.$queryRaw`
-        SELECT COUNT(*) as count FROM "User" WHERE role = 'ADMIN' FOR UPDATE
-      `;
-      const adminCount = Number(result[0].count);
+      const adminCount = await tx.user.count({ where: { role: 'ADMIN' } });
 
       if (adminCount <= 1) {
         throw new Error('LAST_ADMIN');
