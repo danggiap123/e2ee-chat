@@ -24,8 +24,11 @@ export default function Login() {
     try {
       await importKeysFromFile(file);
       setImportStatus('ok');
-      setImportMsg('Nhập key thành công! Hãy đăng nhập lại để mở khóa.');
+      setImportMsg('Nhập key thành công — đang đăng nhập...');
       setError('');
+      // Credentials đã có sẵn trong form → tự submit luôn, không bắt user nhấn lại
+      // Dùng setTimeout để React flush state updates trước khi gọi handleSubmit
+      setTimeout(() => handleSubmit({ preventDefault: () => {} }), 100);
     } catch (err) {
       setImportStatus('error');
       setImportMsg(err.message || 'Nhập file thất bại — kiểm tra lại file .e2ee.');

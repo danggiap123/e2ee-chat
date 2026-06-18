@@ -83,8 +83,10 @@ export default function Chat() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    onMessageDeleted(({ messageId, conversationId }) => {
-      if (conversationId === activeConvIdRef.current) {
+    onMessageDeleted(({ messageId, conversationId, groupId }) => {
+      if (conversationId && conversationId === activeConvIdRef.current) {
+        removeMessageRef.current?.(messageId);
+      } else if (groupId && groupId === activeGroupIdRef.current) {
         removeMessageRef.current?.(messageId);
       }
     });
@@ -391,6 +393,12 @@ export default function Chat() {
     if (!activeGroupId || !activeGroup || isSending) return;
     setSendError('');
     setIsSending(true);
+    // Lấy replyTo và clear ngay — giống handleSend 1-1
+    const currentReply = replyTo;
+    const payload = currentReply
+      ? JSON.stringify({ t: text, r: { id: currentReply.id, u: currentReply.senderUsername, p: currentReply.preview.slice(0, 100) } })
+      : text;
+    setReplyTo(null);
     try {
       const otherMembers = activeGroup.members.filter(m => m.id !== userId);
       if (otherMembers.length === 0) {
@@ -402,17 +410,16 @@ export default function Chat() {
       const recipients = await Promise.all(otherMembers.map(async (member) => {
         const { SK, ekPub, opkId, ikPub } = await getOrCreateGroupSK(activeGroupId, member.id);
         // AAD = `${groupId}:${senderId}` — dùng groupId thay conversationId
-        const { ciphertext, iv, aad } = await encryptMessage(text, SK, activeGroupId, userId);
+        const { ciphertext, iv, aad } = await encryptMessage(payload, SK, activeGroupId, userId);
         return { userId: member.id, ciphertext, iv, aad, ekPub, opkId, ikPub };
       }));
 
-      const { createdAt } = await api.sendGroupMessage(token, {
+      const { messageId, createdAt } = await api.sendGroupMessage(token, {
         groupId: activeGroupId, recipients,
       });
 
-      // Thêm tin vào UI ngay (optimistic)
-      const tempId = `temp-${Date.now()}`;
-      addMessage({ id: tempId, senderId: userId, plaintext: text, createdAt, isDecryptError: false });
+      // Dùng messageId thật từ server — tránh tempId không xóa được
+      addMessage({ id: messageId, senderId: userId, plaintext: payload, createdAt, isDecryptError: false });
 
       setGroups(prev => {
         const idx = prev.findIndex(g => g.groupId === activeGroupId);
@@ -497,13 +504,12 @@ export default function Chat() {
         return { userId: member.id, ciphertext, iv, aad, ekPub, opkId, ikPub };
       }));
 
-      const { createdAt } = await api.sendGroupMessage(token, { groupId: activeGroupId, recipients });
+      const { messageId, createdAt } = await api.sendGroupMessage(token, { groupId: activeGroupId, recipients });
 
-      const tempId = `temp-${Date.now()}`;
       const displayPayload = JSON.stringify({
         type, fileId, fileName: file.name, mimeType: file.type, fileSize: file.size, fileIv, fileKey,
       });
-      addMessage({ id: tempId, senderId: userId, plaintext: displayPayload, createdAt, isDecryptError: false });
+      addMessage({ id: messageId, senderId: userId, plaintext: displayPayload, createdAt, isDecryptError: false });
 
       setGroups(prev => {
         const idx = prev.findIndex(g => g.groupId === activeGroupId);
@@ -590,6 +596,7 @@ export default function Chat() {
   }
 
   // Sau khi verify 1 member trong group → cập nhật isVerifiedByMe trong activeGroup
+  // + đồng bộ fingerprintVerified trong conversations 1-1 nếu có
   function handlePanelMemberVerified(peerId) {
     setActiveGroup(prev => {
       if (!prev) return prev;
@@ -600,6 +607,10 @@ export default function Chat() {
         ),
       };
     });
+    setConversations(prev =>
+      prev.map(c => c.peer?.id === peerId ? { ...c, fingerprintVerified: true } : c)
+    );
+    if (activePeer?.id === peerId) setIsVerified(true);
   }
 
   // ─── peersMap cho MessageList hiển thị tên sender ────────────────────────────
@@ -764,12 +775,12 @@ export default function Chat() {
             <MessageList
               messages={messages} userId={userId} myUsername={username}
               isLoading={isLoading} hasMore={hasMore} onLoadMore={loadMore}
-              peers={peersMap} onDeleteMessage={null} onReply={null}
+              peers={peersMap} onDeleteMessage={handleDeleteMessage} onReply={setReplyTo}
               onDownloadFile={handleDownloadFile}
             />
             <MessageInput
               onSend={handleSendGroup} onSendFile={handleSendGroupFile} isSending={isSending}
-              disabled={false} replyTo={null} onCancelReply={null}
+              disabled={false} replyTo={replyTo} onCancelReply={() => setReplyTo(null)}
             />
           </>
         )}

@@ -43,8 +43,8 @@ export default function MessageInput({ onSend, onSendFile, isSending, disabled, 
         const file = item.getAsFile();
         if (!file) continue;
         e.preventDefault(); // chặn paste text/binary vào textarea
-        if (file.size > 10 * 1024 * 1024) {
-          setFileError('Ảnh quá lớn — tối đa 10MB');
+        if (file.size > 5 * 1024 * 1024) {
+          setFileError('Ảnh quá lớn — tối đa 5MB');
           return;
         }
         setFileError('');
@@ -59,8 +59,8 @@ export default function MessageInput({ onSend, onSendFile, isSending, disabled, 
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = ''; // reset để có thể chọn lại cùng file
-    if (file.size > 10 * 1024 * 1024) {
-      setFileError('File quá lớn — tối đa 10MB');
+    if (file.size > 5 * 1024 * 1024) {
+      setFileError('File quá lớn — tối đa 5MB');
       return;
     }
     setFileError('');
@@ -122,7 +122,7 @@ export default function MessageInput({ onSend, onSendFile, isSending, disabled, 
           type="button"
           onClick={() => fileInputRef.current?.click()}
           disabled={disabled || isSending}
-          title="Gửi file hoặc ảnh (tối đa 10MB)"
+          title="Gửi file hoặc ảnh (tối đa 5MB)"
           className="shrink-0 w-9 h-9 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center
             hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >

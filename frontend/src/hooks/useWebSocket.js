@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
+import sodium from 'libsodium-wrappers';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import { useNavigate } from 'react-router-dom';
 import * as storage from '../db/storage.js';
+import { generateOneTimePreKeys, toBase64 } from '../crypto/keyGen.js';
 import { performX3DH_receiver } from '../crypto/x3dh.js';
 import { decryptMessage } from '../crypto/aesGcm.js';
+import { uploadMoreOPKs } from '../services/api.js';
 import {
   connectSocket,
   disconnectSocket,
@@ -82,7 +85,7 @@ export function useWebSocket() {
     });
 
     onSocketEvent('message_deleted', (msg) => {
-      messageDeletedCallbackRef.current?.({ messageId: msg.messageId, conversationId: msg.conversationId });
+      messageDeletedCallbackRef.current?.({ messageId: msg.messageId, conversationId: msg.conversationId, groupId: msg.groupId });
     });
 
     // Thành viên mới được thêm vào nhóm
@@ -115,6 +118,25 @@ export function useWebSocket() {
       logout().finally(() => navigate('/login', { replace: true }));
     });
 
+    // Server báo pool OPK sắp hết (< 10) → tự động sinh và upload thêm 90 OPK
+    onSocketEvent('low_opk', async () => {
+      const wKey = wrappingKeyRef.current;
+      const uid  = userIdRef.current;
+      if (!wKey || !uid || !token) return;
+      try {
+        await sodium.ready;
+        const opkList = await generateOneTimePreKeys(90);
+        const opkPubs = opkList.map(({ id, OPK_priv }) => ({
+          id,
+          pub: toBase64(sodium.crypto_scalarmult_base(OPK_priv)),
+        }));
+        await storage.saveMoreOPKs(uid, wKey, opkList);
+        await uploadMoreOPKs(token, opkPubs);
+      } catch (err) {
+        console.error('[useWebSocket] OPK replenish error:', err);
+      }
+    });
+
     return () => {
       offSocketEvent('connected');
       offSocketEvent('presence');
@@ -128,6 +150,7 @@ export function useWebSocket() {
       offSocketEvent('group_system_message');
       offSocketEvent('session_replaced');
       offSocketEvent('auth_expired');
+      offSocketEvent('low_opk');
       setIsConnected(false);
       disconnectSocket();
     };

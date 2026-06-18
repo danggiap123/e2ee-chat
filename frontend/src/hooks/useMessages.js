@@ -115,18 +115,34 @@ export function useMessages(conversationId, sessionKeysRef, groupId = null) {
   // Group có nhiều sender → mỗi sender có SK riêng, cache key = `${groupId}:${senderId}`
   async function fetchGroupBatch(cursor) {
     const tok = tokenRef.current;
+    const uid = userIdRef.current;
     if (!groupId || !tok) return;
 
     setIsLoading(true);
     try {
-      const { messages: raw, nextCursor } = await api.loadGroupMessages(tok, groupId, cursor);
+      const { messages: rawAll, nextCursor } = await api.loadGroupMessages(tok, groupId, cursor);
 
-      // Thu thập tất cả senderId duy nhất trong batch
-      const senderIds = [...new Set(raw.map(m => m.senderId))];
+      // Dedup tin tự gửi: server trả N bản mã (1 per recipient) cho cùng 1 tin.
+      // Nhận diện bằng cặp (senderId, createdAt) — cùng transaction nên createdAt giống nhau.
+      // Giữ lại bản đầu tiên, bỏ các bản còn lại.
+      const seenOwn = new Set();
+      const raw = rawAll.filter(m => {
+        if (m.senderId !== uid) return true;  // tin của người khác: giữ hết
+        if (m.isSystem) return true;
+        const key = `${m.senderId}:${m.createdAt}`;
+        if (seenOwn.has(key)) return false;
+        seenOwn.add(key);
+        return true;
+      });
 
-      // Lấy SK cho từng sender (parallel)
+      // Thu thập senderId của tin người khác gửi cho mình
+      const otherSenderIds = [...new Set(
+        raw.filter(m => m.senderId !== uid && !m.isSystem).map(m => m.senderId)
+      )];
+
+      // Lấy SK cho từng sender khác (parallel)
       const skMap = new Map(); // senderId → SK
-      await Promise.all(senderIds.map(async (senderId) => {
+      await Promise.all(otherSenderIds.map(async (senderId) => {
         const cacheKey = `${groupId}:${senderId}`;
         let SK = await getSK(cacheKey);
 
@@ -141,20 +157,41 @@ export function useMessages(conversationId, sessionKeysRef, groupId = null) {
         if (SK) skMap.set(senderId, SK);
       }));
 
-      // Decrypt song song — system messages bỏ qua, tin thường dùng SK của sender
+      // Decrypt song song
       const decrypted = await Promise.all(raw.map(async (m) => {
         if (m.isSystem) {
           return { id: m.id, senderId: m.senderId, plaintext: null, createdAt: m.createdAt, isSystem: true, systemText: m.systemText, isDecryptError: false };
         }
-        const SK = skMap.get(m.senderId) ?? null;
+
+        let SK = null;
+        if (m.senderId === uid) {
+          // Tin tự gửi: dùng SK của recipient (sender đã tạo SK này lúc gửi)
+          if (m.recipientId) SK = await getSK(`${groupId}:${m.recipientId}`);
+        } else {
+          // Tin người khác gửi cho mình: dùng SK của sender
+          SK = skMap.get(m.senderId) ?? null;
+        }
+
         if (!SK) return { id: m.id, senderId: m.senderId, plaintext: null, createdAt: m.createdAt, isSystem: false, isDecryptError: true };
         const plaintext = await decryptMessage(m.ciphertext, m.iv, m.aad, SK);
         return { id: m.id, senderId: m.senderId, plaintext, createdAt: m.createdAt, isSystem: false, isDecryptError: plaintext === null };
       }));
 
       const ordered = [...decrypted].reverse();
-      if (cursor === null) setMessages(ordered);
-      else setMessages(prev => [...ordered, ...prev]);
+      if (cursor === null) {
+        setMessages(ordered);
+      } else {
+        setMessages(prev => {
+          // Dedup cross-page: cursor có thể rơi vào giữa sibling rows của cùng 1 tin,
+          // khiến tin đó xuất hiện ở cả page trước lẫn page này.
+          // Dùng (senderId + createdAt) làm key thay vì id vì sibling rows có id khác nhau.
+          const seenKeys = new Set(
+            prev.map(m => `${m.senderId}:${m.createdAt}`)
+          );
+          const unique = ordered.filter(m => !seenKeys.has(`${m.senderId}:${m.createdAt}`));
+          return [...unique, ...prev];
+        });
+      }
 
       cursorRef.current = nextCursor;
       setHasMore(nextCursor !== null);

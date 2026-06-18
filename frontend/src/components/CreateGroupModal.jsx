@@ -65,6 +65,7 @@ export default function CreateGroupModal({ token, currentUserId, onClose, onCrea
         groupId: data.groupId,
         name: data.name,
         createdBy: data.createdBy,
+        adminId: data.adminId,
         members: [
           { id: currentUserId, username: 'Bạn' },
           ...selected,

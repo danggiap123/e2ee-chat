@@ -185,7 +185,7 @@ export async function deleteFile(token, fileId) {
 // POST /messages (group)
 // recipients: [{ userId, ciphertext, iv, aad, ekPub?, opkId?, ikPub? }]
 // Mỗi recipient nhận 1 bản mã riêng — server không đọc được nội dung
-// Return: { count, createdAt }
+// Return: { count, messageId, createdAt } — messageId là ID của row đầu tiên, dùng làm reference xóa
 export async function sendGroupMessage(token, { groupId, recipients }) {
   return apiFetch('/messages', {
     method: 'POST',

@@ -10,6 +10,8 @@ import {
 import * as storage from '../db/storage.js';
 import * as api from '../services/api.js';
 
+const SPK_ROTATE_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 ngày
+
 export const AuthContext = createContext(null);
 
 // Decode JWT payload để lấy role — chỉ dùng cho UI routing, không thay thế xác thực backend
@@ -124,6 +126,25 @@ export function AuthProvider({ children }) {
     setIKSecret(keys.IK_secret);
     setIKPub(keys.IK_pub);
     setSPKPriv(keys.SPK_priv);
+
+    // 8. Rotate SPK nếu > 7 ngày kể từ lần rotate trước
+    // Không throw khi fail — login vẫn thành công, rotate sẽ thử lại lần login sau
+    const rotateKey = `lastSpkRotate_${uid}`;
+    const lastRotate = parseInt(localStorage.getItem(rotateKey) || '0');
+    if (Date.now() - lastRotate > SPK_ROTATE_INTERVAL_MS) {
+      try {
+        const { SPK_priv: newSPKPriv, SPK_pub, SPK_sig } = await generateSignedPreKey(keys.IK_secret);
+        await api.rotateSpk(t, {
+          spkPub: toBase64(SPK_pub),
+          spkSig: toBase64(SPK_sig),
+        });
+        await storage.updateSPK(uid, wKey, newSPKPriv);
+        setSPKPriv(newSPKPriv);
+        localStorage.setItem(rotateKey, Date.now().toString());
+      } catch (err) {
+        console.error('[login] SPK rotation failed:', err);
+      }
+    }
   }
 
   // ── unlock (sau reload) ──────────────────────────────────────────────────────

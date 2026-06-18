@@ -173,6 +173,46 @@ export async function deleteSession(conversationId) {
   await db.sessions.delete(conversationId);
 }
 
+/**
+ * Thêm OPK mới vào IndexedDB sau khi server báo pool sắp hết (low_opk event).
+ * Chỉ append — không đụng đến IK, SPK, OPK cũ.
+ *
+ * @param {string}   userId
+ * @param {CryptoKey} wrappingKey
+ * @param {Array<{id: string, OPK_priv: Uint8Array}>} opkList
+ */
+export async function saveMoreOPKs(userId, wrappingKey, opkList) {
+  const newWrapped = await Promise.all(
+    opkList.map(async ({ id, OPK_priv }) => {
+      const { wrapped, iv } = await wrapPrivateKey(OPK_priv, wrappingKey);
+      return { id, wrapped, iv };
+    })
+  );
+
+  await db.privateKeys
+    .where('userId').equals(userId)
+    .modify(record => {
+      record.wrappedOPKs = [...record.wrappedOPKs, ...newWrapped];
+    });
+}
+
+/**
+ * Cập nhật SPK trong IndexedDB sau khi rotate — chỉ thay SPK_priv, giữ nguyên IK và OPK.
+ *
+ * @param {string}     userId
+ * @param {CryptoKey}  wrappingKey
+ * @param {Uint8Array} newSPKPriv
+ */
+export async function updateSPK(userId, wrappingKey, newSPKPriv) {
+  const { wrapped: wrappedSPK, iv: ivSPK } = await wrapPrivateKey(newSPKPriv, wrappingKey);
+  await db.privateKeys
+    .where('userId').equals(userId)
+    .modify(record => {
+      record.wrappedSPK = wrappedSPK;
+      record.ivSPK      = ivSPK;
+    });
+}
+
 // ─── export / import .e2ee (chuyển thiết bị) ─────────────────────────────────
 
 /**
@@ -206,11 +246,19 @@ export async function exportKeysToFile(userId) {
  */
 export async function importKeysFromFile(file) {
   const text    = await file.text();
-  const payload = JSON.parse(text);
+  let payload;
+  try { payload = JSON.parse(text); } catch {
+    throw new Error('File không hợp lệ — không phải định dạng .e2ee');
+  }
 
   if (payload.version !== 1) throw new Error('File .e2ee không đúng phiên bản');
+  if (!payload.privateKeys?.userId || typeof payload.privateKeys.wrapSalt !== 'string') {
+    throw new Error('File .e2ee bị hỏng hoặc thiếu dữ liệu khóa');
+  }
+  if (!Array.isArray(payload.sessions)) {
+    throw new Error('File .e2ee bị hỏng — thiếu danh sách session');
+  }
 
-  // Ghi vào IndexedDB — ghi đè nếu đã có
   await db.privateKeys.put(payload.privateKeys);
   for (const session of payload.sessions) {
     await db.sessions.put(session);

@@ -13,10 +13,10 @@ const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
 // Multer: giữ file trong memory (Buffer), server sẽ ghi ra disk sau khi có UUID từ DB
-// Giới hạn 10MB — đủ cho demo, ngăn DoS qua upload file khổng lồ
+// Giới hạn 7MB — file gốc tối đa 5MB, sau mã hóa AES-GCM + multipart overhead ~1.4x
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: 7 * 1024 * 1024 },
 });
 
 // ─── POST /files/upload ───────────────────────────────────────────────────────

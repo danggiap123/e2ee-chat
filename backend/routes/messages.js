@@ -177,6 +177,7 @@ async function handleGroupMessage(req, res) {
 
     return res.status(201).json({
       count: messages.length,
+      messageId: messages[0].id,
       createdAt: messages[0].createdAt,
     });
   } catch (err) {
@@ -196,30 +197,38 @@ router.get('/group/:groupId', requireAuth, async (req, res) => {
     const { groupId } = req.params;
     const limit = Math.min(parseInt(req.query.limit) || 20, 100);
     const cursor = req.query.cursor;
+    const userId = req.user.userId;
 
     const membership = await prisma.groupMember.findUnique({
-      where: { groupId_userId: { groupId, userId: req.user.userId } },
+      where: { groupId_userId: { groupId, userId } },
     });
 
     if (!membership) {
       return res.status(403).json({ error: 'Bạn không phải thành viên của nhóm này' });
     }
 
-    const messages = await prisma.message.findMany({
+    // Đếm số thành viên để biết mỗi tin nhắn của sender tạo bao nhiêu rows.
+    // Với N thành viên, sender tạo N-1 rows/tin → cần fetch limit*(N-1) rows để có đủ limit tin logic.
+    const memberCount = await prisma.groupMember.count({ where: { groupId } });
+    const rowMultiplier = Math.max(memberCount - 1, 1);
+    const fetchLimit = limit * rowMultiplier + rowMultiplier; // +rowMultiplier để buffer tránh thiếu
+
+    const rawRows = await prisma.message.findMany({
       where: {
         groupId,
-        // Trả về: bản mã của user này HOẶC tin hệ thống (isSystem=true, không cần recipientId)
         OR: [
-          { recipientId: req.user.userId },
+          { recipientId: userId },
+          { senderId: userId },
           { isSystem: true },
         ],
       },
       orderBy: { createdAt: 'desc' },
-      take: limit,
+      take: fetchLimit,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       select: {
         id: true,
         senderId: true,
+        recipientId: true,
         ciphertext: true,
         iv: true,
         aad: true,
@@ -232,9 +241,21 @@ router.get('/group/:groupId', requireAuth, async (req, res) => {
       },
     });
 
-    const nextCursor = messages.length === limit
-      ? messages[messages.length - 1].id
-      : null;
+    // Dedup server-side: với tin của sender, chỉ giữ 1 row/tin (theo createdAt).
+    // Tin của người khác gửi cho mình: đã là 1 row/tin, giữ nguyên.
+    const seen = new Set();
+    const messages = [];
+    for (const row of rawRows) {
+      if (row.isSystem || row.senderId !== userId) {
+        messages.push(row);
+      } else {
+        const key = row.createdAt.toISOString();
+        if (!seen.has(key)) { seen.add(key); messages.push(row); }
+      }
+      if (messages.length >= limit) break;
+    }
+
+    const nextCursor = messages.length >= limit ? messages[messages.length - 1].id : null;
 
     return res.json({ messages, nextCursor });
   } catch (err) {
@@ -312,7 +333,14 @@ router.delete('/:messageId', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Bạn chỉ có thể xóa tin nhắn của chính mình' });
     }
 
-    await prisma.message.delete({ where: { id: messageId } });
+    if (message.groupId) {
+      // Xóa toàn bộ N rows được tạo cùng 1 transaction (mỗi recipient 1 row)
+      await prisma.message.deleteMany({
+        where: { groupId: message.groupId, senderId: message.senderId, createdAt: message.createdAt },
+      });
+    } else {
+      await prisma.message.delete({ where: { id: messageId } });
+    }
 
     // Notify receiver nếu là tin 1-1
     if (message.conversationId) {
@@ -329,6 +357,25 @@ router.delete('/:messageId', requireAuth, async (req, res) => {
             type: 'message_deleted',
             messageId,
             conversationId: message.conversationId,
+          }));
+        }
+      }
+    }
+
+    // Notify tất cả thành viên đang online nếu là tin nhóm
+    if (message.groupId) {
+      const members = await prisma.groupMember.findMany({
+        where: { groupId: message.groupId },
+        select: { userId: true },
+      });
+      for (const member of members) {
+        if (member.userId === req.user.userId) continue; // người xóa tự biết rồi
+        const memberSocket = clients.get(member.userId);
+        if (memberSocket && memberSocket.readyState === WebSocket.OPEN) {
+          memberSocket.send(JSON.stringify({
+            type: 'message_deleted',
+            messageId,
+            groupId: message.groupId,
           }));
         }
       }

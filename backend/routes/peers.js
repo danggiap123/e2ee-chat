@@ -26,11 +26,26 @@ router.patch('/:peerId/verify', requireAuth, async (req, res) => {
       return res.status(404).json({ error: 'Người dùng không tồn tại' });
     }
 
+    const me = req.user.userId;
+
     // upsert: nếu đã có bản ghi thì giữ nguyên, không throw lỗi unique constraint
     await prisma.peerVerification.upsert({
-      where: { verifierId_peerId: { verifierId: req.user.userId, peerId } },
-      create: { verifierId: req.user.userId, peerId },
+      where: { verifierId_peerId: { verifierId: me, peerId } },
+      create: { verifierId: me, peerId },
       update: {},
+    });
+
+    // Đồng bộ sang Conversation.fingerprintVerified nếu 2 người đã có cuộc trò chuyện 1-1
+    // Conversation lưu participantA < participantB theo thứ tự alphabet để tránh duplicate
+    await prisma.conversation.updateMany({
+      where: {
+        OR: [
+          { participantA: me, participantB: peerId },
+          { participantA: peerId, participantB: me },
+        ],
+        fingerprintVerified: false,
+      },
+      data: { fingerprintVerified: true },
     });
 
     return res.json({ message: 'Xác minh thành công' });

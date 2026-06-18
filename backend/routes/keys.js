@@ -78,11 +78,19 @@ router.get('/:userId', requireAuth, async (req, res) => {
 
     const [firstOpk, ...remainingOpks] = bundle.opkPubs;
 
-    // Xóa OPK vừa lấy khỏi DB ngay lập tức — dùng 1 lần rồi bỏ 
+    // Xóa OPK vừa lấy khỏi DB ngay lập tức — dùng 1 lần rồi bỏ
     await prisma.keyBundle.update({
       where: { userId: req.params.userId },
       data: { opkPubs: remainingOpks },
     });
+
+    // Cảnh báo chủ nhân pool nếu còn < 10 OPK — họ cần upload thêm
+    if (remainingOpks.length < 10) {
+      const ownerSocket = clients.get(req.params.userId);
+      if (ownerSocket && ownerSocket.readyState === WebSocket.OPEN) {
+        ownerSocket.send(JSON.stringify({ type: 'low_opk', remaining: remainingOpks.length }));
+      }
+    }
 
     return res.json({
       ikPub: bundle.ikPub,
