@@ -10,8 +10,9 @@ import UnlockModal from './components/UnlockModal.jsx';
 // Chỉ cho vào /admin nếu đã đăng nhập và có role ADMIN
 // Chưa đăng nhập → /login | Đã đăng nhập nhưng không phải ADMIN → /chat
 function AdminRoute({ children }) {
-  const { isAuthenticated, role } = useAuth();
+  const { isAuthenticated, isLocked, role } = useAuth();
   if (!isAuthenticated) return <Navigate to="/login" replace />;
+  if (isLocked) return <Navigate to="/login" replace />;
   if (role !== 'ADMIN') return <Navigate to="/chat" replace />;
   return children;
 }

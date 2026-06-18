@@ -12,12 +12,25 @@ import * as api from '../services/api.js';
 
 export const AuthContext = createContext(null);
 
+// Decode JWT payload để lấy role — chỉ dùng cho UI routing, không thay thế xác thực backend
+function decodeTokenRole(token) {
+  if (!token) return 'USER';
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    return payload?.role ?? 'USER';
+  } catch {
+    return 'USER';
+  }
+}
+
 export function AuthProvider({ children }) {
   // ── localStorage state (còn sau reload) ─────────────────────────────────────
   const [token,    setToken]    = useState(() => localStorage.getItem('token'));
   const [userId,   setUserId]   = useState(() => localStorage.getItem('userId'));
   const [username, setUsername] = useState(() => localStorage.getItem('username'));
-  const [role,     setRole]     = useState(() => localStorage.getItem('role') ?? 'USER');
+
+  // role derive từ JWT thay vì đọc localStorage riêng — không thể giả mạo bằng sửa localStorage
+  const role = decodeTokenRole(token);
 
   // ── RAM state (mất khi reload — đúng với thiết kế E2EE) ─────────────────────
   const [wrappingKey, setWrappingKey] = useState(null);
@@ -98,14 +111,13 @@ export function AuthProvider({ children }) {
     }
 
     // 6. Lưu auth info vào localStorage — còn sau reload
+    // role KHÔNG lưu localStorage — được derive từ JWT token mỗi lần load
     localStorage.setItem('token',    t);
     localStorage.setItem('userId',   uid);
     localStorage.setItem('username', uname);
-    localStorage.setItem('role',     r ?? 'USER');
     setToken(t);
     setUserId(uid);
     setUsername(uname);
-    setRole(r ?? 'USER');
 
     // 7. Đưa keys vào RAM — mất khi reload (đúng với thiết kế)
     setWrappingKey(wKey);
@@ -144,14 +156,13 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('token');
     localStorage.removeItem('userId');
     localStorage.removeItem('username');
-    localStorage.removeItem('role');
+    localStorage.removeItem('role'); // dọn dẹp key cũ nếu còn sót
 
     // 3. Clear toàn bộ state — wrappingKey và key material xóa khỏi RAM
     // KHÔNG xóa IndexedDB — wrapped keys vẫn còn, login lại vẫn dùng được
     setToken(null);
     setUserId(null);
     setUsername(null);
-    setRole('USER');
     setWrappingKey(null);
     setIKSecret(null);
     setIKPub(null);
