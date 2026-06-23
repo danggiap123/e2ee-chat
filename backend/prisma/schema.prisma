@@ -48,11 +48,10 @@ model KeyBundle {
 
 // Bảng cuộc trò chuyện 1-1
 model Conversation {
-  id                  String    @id @default(uuid())
-  participantA        String
-  participantB        String
-  fingerprintVerified Boolean   @default(false)
-  createdAt           DateTime  @default(now())
+  id           String   @id @default(uuid())
+  participantA String
+  participantB String
+  createdAt    DateTime @default(now())
 
   userA    User      @relation("ConversationA", fields: [participantA], references: [id])
   userB    User      @relation("ConversationB", fields: [participantB], references: [id])

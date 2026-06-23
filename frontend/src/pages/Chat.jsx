@@ -593,6 +593,19 @@ export default function Chat() {
     setConversations(prev =>
       prev.map(c => c.conversationId === activeConvId ? { ...c, fingerprintVerified: true } : c)
     );
+    // Đồng bộ sang group đang mở nếu peer là thành viên
+    if (activePeer) {
+      setActiveGroup(prev => {
+        if (!prev) return prev;
+        if (!prev.members.some(m => m.id === activePeer.id)) return prev;
+        return {
+          ...prev,
+          members: prev.members.map(m =>
+            m.id === activePeer.id ? { ...m, isVerifiedByMe: true } : m
+          ),
+        };
+      });
+    }
   }
 
   // Sau khi verify 1 member trong group → cập nhật isVerifiedByMe trong activeGroup
@@ -717,7 +730,7 @@ export default function Chat() {
             ) : (
               <MessageInput
                 onSend={handleSend} onSendFile={handleSendFile} isSending={isSending}
-                disabled={!isVerified} replyTo={replyTo} onCancelReply={() => setReplyTo(null)}
+                disabled={false} replyTo={replyTo} onCancelReply={() => setReplyTo(null)}
               />
             )}
           </>
@@ -817,7 +830,7 @@ export default function Chat() {
           peerUsername={activePeer.username}
           onClose={() => setShowFingerprint(false)}
           onVerified={handleVerified}
-          onConfirm={() => api.verifyFingerprint(token, activeConvId)}
+          onConfirm={() => api.verifyPeer(token, activePeer.id)}
         />
       )}
       {showFingerprint && !activePeer?.ikPub && (

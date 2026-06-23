@@ -35,19 +35,6 @@ router.patch('/:peerId/verify', requireAuth, async (req, res) => {
       update: {},
     });
 
-    // Đồng bộ sang Conversation.fingerprintVerified nếu 2 người đã có cuộc trò chuyện 1-1
-    // Conversation lưu participantA < participantB theo thứ tự alphabet để tránh duplicate
-    await prisma.conversation.updateMany({
-      where: {
-        OR: [
-          { participantA: me, participantB: peerId },
-          { participantA: peerId, participantB: me },
-        ],
-        fingerprintVerified: false,
-      },
-      data: { fingerprintVerified: true },
-    });
-
     return res.json({ message: 'Xác minh thành công' });
   } catch (err) {
     console.error('[PATCH /peers/:peerId/verify]', err);

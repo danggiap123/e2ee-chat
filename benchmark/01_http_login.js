@@ -31,12 +31,12 @@ export const options = {
   },
 };
 
-const BASE_URL = __ENV.BASE_URL || 'http://localhost:3000';
+// FIX: route /api qua nginx (port 3000 không publish ra host)
+const BASE_URL = __ENV.BASE_URL || 'http://localhost/api';
 
-// Dùng tài khoản admin seed (đã có trong DB sau khi chạy docker-compose)
-// Hoặc đổi thành bất kỳ user nào đang tồn tại
+// FIX: /auth/login nhận field `username`, KHÔNG phải `email`
 const TEST_USER = {
-  email:    __ENV.TEST_EMAIL    || 'it@company.com',
+  username: __ENV.TEST_USERNAME || 'admin',
   password: __ENV.TEST_PASSWORD || 'Admin@123456',
 };
 

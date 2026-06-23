@@ -62,7 +62,7 @@ router.post('/', requireAuth, async (req, res) => {
 
 // ─── GET /conversations ───────────────────────────────────────────────────────
 // Lấy danh sách conversation của user đang đăng nhập
-// Kèm username người kia + timestamp tin nhắn cuối để hiển thị sidebar
+// fingerprintVerified được tính từ PeerVerification — nguồn sự thật duy nhất
 router.get('/', requireAuth, async (req, res) => {
   try {
     const conversations = await prisma.conversation.findMany({
@@ -74,7 +74,6 @@ router.get('/', requireAuth, async (req, res) => {
       },
       select: {
         id: true,
-        fingerprintVerified: true,
         createdAt: true,
         userA: {
           select: {
@@ -96,27 +95,33 @@ router.get('/', requireAuth, async (req, res) => {
       },
     });
 
-    // Định dạng lại: trả về thông tin người kia
+    // PeerVerification là nguồn sự thật duy nhất cho trạng thái xác minh
+    const peerIds = conversations.map(conv =>
+      conv.userA.id === req.user.userId ? conv.userB.id : conv.userA.id
+    );
+    const verifications = await prisma.peerVerification.findMany({
+      where: { verifierId: req.user.userId, peerId: { in: peerIds } },
+      select: { peerId: true },
+    });
+    const verifiedSet = new Set(verifications.map(v => v.peerId));
+
     const result = conversations.map((conv) => {
       const isA = conv.userA.id === req.user.userId;
       const peer = isA ? conv.userB : conv.userA;
-
       return {
         conversationId: conv.id,
         peer: {
           id: peer.id,
           username: peer.username,
           isActive: peer.isActive,
-          ikPub: peer.keyBundle?.ikPub ?? null, // Ed25519 public key — dùng để tính fingerprint
+          ikPub: peer.keyBundle?.ikPub ?? null,
         },
-        fingerprintVerified: conv.fingerprintVerified,
+        fingerprintVerified: verifiedSet.has(peer.id),
         lastMessageAt: conv.messages[0]?.createdAt ?? conv.createdAt,
       };
     });
 
-    // Sắp xếp theo tin nhắn mới nhất lên đầu
     result.sort((a, b) => new Date(b.lastMessageAt) - new Date(a.lastMessageAt));
-
     return res.json({ conversations: result });
   } catch (err) {
     console.error('[GET /conversations]', err);
@@ -125,7 +130,8 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // ─── PATCH /conversations/:convId/fingerprint ─────────────────────────────────
-// Đánh dấu fingerprint đã được verify — chỉ set true, không cho phép unverify
+// Redirect: tìm peerId từ convId rồi ghi vào PeerVerification (nguồn sự thật duy nhất)
+// Giữ endpoint này để tương thích với client cũ — frontend mới nên gọi PATCH /peers/:peerId/verify
 router.patch('/:convId/fingerprint', requireAuth, async (req, res) => {
   try {
     const { convId } = req.params;
@@ -146,29 +152,15 @@ router.patch('/:convId/fingerprint', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Bạn không phải thành viên của conversation này' });
     }
 
-    if (conversation.fingerprintVerified) {
-      return res.json({ message: 'Fingerprint đã được xác nhận trước đó' });
-    }
-
-    // Tìm peerId (người kia trong conversation)
     const peerId = conversation.participantA === req.user.userId
       ? conversation.participantB
       : conversation.participantA;
 
-    // Ghi đồng thời vào Conversation + PeerVerification trong 1 transaction
-    // Lý do: PeerVerification là nguồn sự thật chung cho cả 1-1 và group —
-    // nếu chỉ ghi Conversation thì group sẽ không nhận ra đã verify rồi
-    await prisma.$transaction([
-      prisma.conversation.update({
-        where: { id: convId },
-        data: { fingerprintVerified: true },
-      }),
-      prisma.peerVerification.upsert({
-        where: { verifierId_peerId: { verifierId: req.user.userId, peerId } },
-        create: { verifierId: req.user.userId, peerId },
-        update: {},
-      }),
-    ]);
+    await prisma.peerVerification.upsert({
+      where: { verifierId_peerId: { verifierId: req.user.userId, peerId } },
+      create: { verifierId: req.user.userId, peerId },
+      update: {},
+    });
 
     return res.json({ message: 'Xác nhận fingerprint thành công' });
   } catch (err) {

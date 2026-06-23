@@ -33,7 +33,7 @@ export const options = {
   },
 };
 
-const BASE_URL = __ENV.BASE_URL    || 'http://localhost:3000';
+const BASE_URL = __ENV.BASE_URL    || 'http://localhost/api';  // FIX: qua nginx, port 3000 không mở
 const TOKEN    = __ENV.TOKEN       || '';   // JWT của sender
 const CONV_ID  = __ENV.CONV_ID     || '';   // conversationId đã tạo sẵn
 

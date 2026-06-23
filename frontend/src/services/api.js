@@ -121,16 +121,6 @@ export async function listConversations(token) {
   return apiFetch('/conversations', {}, token);
 }
 
-// PATCH /conversations/:convId/fingerprint
-// Chỉ gọi sau khi user bấm "Xác nhận" trong FingerprintModal.
-// Idempotent: nếu đã verify rồi thì server trả 200, không báo lỗi.
-// Không có hàm "unverify" — một khi đã verify thì không đổi lại được.
-export async function verifyFingerprint(token, conversationId) {
-  return apiFetch(`/conversations/${conversationId}/fingerprint`, {
-    method: 'PATCH',
-  }, token);
-}
-
 // DELETE /conversations/:convId
 // Xóa conversation + toàn bộ tin nhắn bên trong (server xóa Message trước vì foreign key).
 // Chỉ member của conversation mới xóa được — server kiểm tra.

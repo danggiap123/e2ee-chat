@@ -40,7 +40,7 @@ export const options = {
   },
 };
 
-const WS_URL = __ENV.WS_URL || 'ws://localhost:3000/ws';
+const WS_URL = __ENV.WS_URL || 'ws://localhost/ws';  // FIX: qua nginx, port 3000 không mở
 const TOKEN  = __ENV.TOKEN  || '';
 
 if (!TOKEN) throw new Error('Cần truyền -e TOKEN=<jwt>');

@@ -21,4 +21,7 @@ Thumbs.db
 # Docker volumes (data local)
 postgres_data/
 
+# Database backups (chứa dữ liệu thật, không push lên git)
+backups/
+
 # Local project docs (không push lên git)

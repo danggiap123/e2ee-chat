@@ -10,11 +10,12 @@
 import http from 'k6/http';
 import { check } from 'k6';
 
-const BASE_URL = __ENV.BASE_URL || 'http://localhost:3000';
+// FIX: backend route /api qua nginx (port 3000 không publish ra host)
+const BASE_URL = __ENV.BASE_URL || 'http://localhost/api';
 
-// Đổi thành email/password của 2 user thực trong DB
-const ALICE = { email: __ENV.ALICE_EMAIL || 'alice@company.com', password: __ENV.ALICE_PASS || 'Alice@123456' };
-const BOB   = { email: __ENV.BOB_EMAIL   || 'bob@company.com',   password: __ENV.BOB_PASS   || 'Bob@123456'   };
+// FIX: /auth/login nhận field `username`, KHÔNG phải `email`
+const ALICE = { username: __ENV.ALICE_USER || 'alice', password: __ENV.ALICE_PASS || 'Alice@123456' };
+const BOB   = { username: __ENV.BOB_USER   || 'bob',   password: __ENV.BOB_PASS   || 'Bob@123456'   };
 
 export default function () {
   const headers = { 'Content-Type': 'application/json' };
@@ -38,7 +39,8 @@ export default function () {
     { headers: { ...headers, Authorization: `Bearer ${aliceToken}` } }
   );
   check(convRes, { 'conv created': (r) => r.status === 200 || r.status === 201 });
-  const convId = convRes.json('id');
+  // FIX: route trả về field `conversationId`, không phải `id`
+  const convId = convRes.json('conversationId');
 
   console.log('\n========== COPY CÁC GIÁ TRỊ SAU ĐỂ CHẠY BENCHMARK ==========');
   console.log(`ALICE_TOKEN=${aliceToken}`);
